@@ -1,0 +1,8 @@
+#!/bin/sh
+# AmazonDark postinst
+# No auto-killall/respring — learned from the CarBridgeReborn sessions that an
+# automatic respring races the NathanLR/Ellekit dpkg triggers. The user force-quits
+# and relaunches Amazon from the app switcher to activate.
+echo "[AmazonDark] Installed. Force-quit and relaunch Amazon to activate."
+echo "[AmazonDark] Tune it in Settings > AmazonDark."
+exit 0
