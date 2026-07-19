@@ -273,6 +273,17 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
         // Lightweight re-apply; the heavy engine arrives via the documentStart userscript.
         NSString *js = ADDarkReaderReapply();
         if (js.length) [wv evaluateJavaScript:js completionHandler:nil];
+
+        // Name the page once per URL. Tells us which surfaces are actually web —
+        // a tab that never shows up here is native and needs a different fix.
+        static NSMutableSet *seen = nil;
+        if (!seen) seen = [NSMutableSet set];
+        NSString *u = wv.URL.absoluteString ?: @"(no url)";
+        if (u.length > 90) u = [u substringToIndex:90];
+        if (![seen containsObject:u]){
+            [seen addObject:u];
+            ADLog(@"web themed: %@", u);
+        }
     } @catch(...) {}
 }
 
@@ -871,6 +882,12 @@ static void ADProbeTree(UIView *v, int depth, int *found){
                           object_getClassName(v), r,g,b,a,
                           v.bounds.size.width, v.bounds.size.height);
                     (*found)++;
+                } else if (a < 0.95 && lum < 0.35 && v.bounds.size.width > 100){
+                    // Dark AND translucent over a large area = the veil on the home tab.
+                    ADLog(@"  probe: DARK-OVERLAY %s rgba(%.2f,%.2f,%.2f,%.2f) frame=%.0fx%.0f",
+                          object_getClassName(v), r,g,b,a,
+                          v.bounds.size.width, v.bounds.size.height);
+                    (*found)++;
                 }
             }
         } else if (v.bounds.size.width > 150 && v.bounds.size.height > 60 && !v.hidden) {
@@ -1166,7 +1183,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.3.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.3.1 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {

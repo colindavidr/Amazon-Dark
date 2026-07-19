@@ -222,9 +222,23 @@ void ADModifyRGB(ADColorRole role,
     ADHSL poleFg = ADRGBToHSL(ADTheme.fgR / 255.0, ADTheme.fgG / 255.0, ADTheme.fgB / 255.0);
 
     // Auto: decide by lightness before dispatching.
+    //
+    // ONE-WAY BY DESIGN. Auto is used for drawRect: painting, where [UIColor set]
+    // gives us a colour with no clue whether it is about to fill a panel or draw
+    // text. v5.2.1 resolved that by lightening dark fills (so custom-drawn text
+    // stayed readable) — but a dark fill is just as often an already-dark
+    // BACKGROUND, and lightening those turned the cart tab, the one perfectly
+    // themed surface, back to white.
+    //
+    // Since the ambiguity cannot be resolved from a colour alone, we prefer no
+    // change over the wrong change: light fills darken, dark fills are left
+    // untouched. Nothing this hook does can ever make the UI lighter. Text colour
+    // is handled properly elsewhere (RCTTextAttributes, attributed strings,
+    // UILabel/UIButton), so it no longer needs to lean on this path.
     if (role == ADColorRoleAuto) {
         ADHSL probe = ADRGBToHSL(r, g, b);
-        role = (probe.l < 0.5) ? ADColorRoleForeground : ADColorRoleBackground;
+        if (probe.l < 0.5) { *outR = r; *outG = g; *outB = b; return; }
+        role = ADColorRoleBackground;
     }
 
     ADHSL mod;
@@ -320,9 +334,11 @@ UIColor *ADModifyUIColor(UIColor *c, ADColorRole role) {
     if (ADIsModifiedUIColor(c)) return nil;            // already ours
 
     // Resolve Auto up-front so the memo key matches the curve actually used.
+    // One-way: a dark fill is returned untouched (see ADModifyRGB for why).
     if (role == ADColorRoleAuto) {
         ADHSL probe = ADRGBToHSL(r, g, b);
-        role = (probe.l < 0.5) ? ADColorRoleForeground : ADColorRoleBackground;
+        if (probe.l < 0.5) return nil;
+        role = ADColorRoleBackground;
     }
 
     // SCRIM GUARD. A partially transparent LIGHT fill can be an overlay sitting on
