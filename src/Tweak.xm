@@ -62,6 +62,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <string.h>
+#import <stdio.h>
 #import <unistd.h>
 #import <fcntl.h>
 #import <dlfcn.h>
@@ -404,12 +405,6 @@ static void ADForceWindowsDarkTrait(void){
 // no allowlist of image classes needs maintaining ever again.
 // ════════════════════════════════════════════════════════════════════════════════
 
-static UIColor *ADColorFromHex(const char *hex){
-    unsigned int r=24,g=26,b=27;
-    if (hex && hex[0]=='#') sscanf(hex+1, "%02x%02x%02x", &r,&g,&b);
-    return [UIColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:1.0];
-}
-
 // Push the current prefs into the colour engine (also clears its memo cache).
 static void ADSyncColorEngine(void){
     ADThemeConfig cfg;
@@ -450,7 +445,9 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
     if (!ADRecolorOn() || !color || ADIsWebKitOwned(self)) { %orig; return; }
     @try {
         UIColor *m = ADModifyUIColor(color, ADColorRoleBackground);
-        %orig(m ?: color); return;
+        if (!m) m = color;
+        %orig(m);
+        return;
     } @catch(...) {}
     %orig;
 }
@@ -461,7 +458,9 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
     if (!ADRecolorOn() || !color || ADIsWebKitOwned(self)) { %orig; return; }
     @try {
         UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
-        %orig(m ?: color); return;
+        if (!m) m = color;
+        %orig(m);
+        return;
     } @catch(...) {}
     %orig;
 }
@@ -472,7 +471,9 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
     if (!ADRecolorOn() || !color) { %orig; return; }
     @try {
         UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
-        %orig(m ?: color); return;
+        if (!m) m = color;
+        %orig(m);
+        return;
     } @catch(...) {}
     %orig;
 }
@@ -481,7 +482,12 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 %hook UITextView
 - (void)setTextColor:(UIColor *)color {
     if (!ADRecolorOn() || !color) { %orig; return; }
-    @try { UIColor *m = ADModifyUIColor(color, ADColorRoleForeground); %orig(m ?: color); return; } @catch(...) {}
+    @try {
+        UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
+        if (!m) m = color;
+        %orig(m);
+        return;
+    } @catch(...) {}
     %orig;
 }
 %end
@@ -489,7 +495,12 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 %hook UITextField
 - (void)setTextColor:(UIColor *)color {
     if (!ADRecolorOn() || !color) { %orig; return; }
-    @try { UIColor *m = ADModifyUIColor(color, ADColorRoleForeground); %orig(m ?: color); return; } @catch(...) {}
+    @try {
+        UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
+        if (!m) m = color;
+        %orig(m);
+        return;
+    } @catch(...) {}
     %orig;
 }
 %end
@@ -497,7 +508,12 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 %hook UIButton
 - (void)setTitleColor:(UIColor *)color forState:(UIControlState)state {
     if (!ADRecolorOn() || !color) { %orig; return; }
-    @try { UIColor *m = ADModifyUIColor(color, ADColorRoleForeground); %orig(m ?: color, state); return; } @catch(...) {}
+    @try {
+        UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
+        if (!m) m = color;
+        %orig(m, state);
+        return;
+    } @catch(...) {}
     %orig;
 }
 %end
@@ -509,7 +525,9 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
     @try {
         if (ADLayerIsWebKitOwned(self)) { %orig; return; }
         CGColorRef m = ADModifyCGColor(color, ADColorRoleBackground);
-        %orig(m ?: color); return;
+        if (!m) m = color;
+        %orig(m);
+        return;
     } @catch(...) {}
     %orig;
 }
@@ -518,7 +536,9 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
     @try {
         if (ADLayerIsWebKitOwned(self)) { %orig; return; }
         CGColorRef m = ADModifyCGColor(color, ADColorRoleBorder);
-        %orig(m ?: color); return;
+        if (!m) m = color;
+        %orig(m);
+        return;
     } @catch(...) {}
     %orig;
 }
@@ -532,9 +552,10 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
         for (id c in colors){
             CGColorRef cg = (__bridge CGColorRef)c;
             CGColorRef m  = ADModifyCGColor(cg, ADColorRoleBackground);
-            [out addObject:(__bridge id)(m ?: cg)];
+            [out addObject:(__bridge id)(m ? m : cg)];
         }
-        %orig(out); return;
+        %orig(out);
+        return;
     } @catch(...) {}
     %orig;
 }
@@ -601,6 +622,11 @@ static void ADSweepAllWindows(void){
 // Splash: while Dark Reader / native theme spin up, keep the launch screen dark so
 // there is no white flash. Set the splash VC's own view backgroundColor (no invert).
 // ════════════════════════════════════════════════════════════════════════════════
+static UIColor *ADColorFromHex(const char *hex){
+    unsigned int r=24,g=26,b=27;
+    if (hex && hex[0]=='#') sscanf(hex+1, "%02x%02x%02x", &r,&g,&b);
+    return [UIColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:1.0];
+}
 static void ADDarkenSplash(UIViewController *vc){
     if (!gP.enabled) return;
     @try { UIView *v = vc.view; if (v) v.backgroundColor = ADColorFromHex(gP.bgHex); } @catch(...) {}

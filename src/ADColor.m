@@ -8,6 +8,8 @@
 #import <objc/runtime.h>
 #import <math.h>
 #import <string.h>
+#import <stdint.h>
+#import <stdio.h>
 
 ADThemeConfig ADTheme = {
     .brightness = 100, .contrast = 100, .grayscale = 0, .sepia = 0,
