@@ -13,7 +13,7 @@ AmazonDark_FRAMEWORKS = UIKit Foundation WebKit CoreGraphics QuartzCore
 
 # Bundle the official Dark Reader UMD (resources/) alongside the dylib as
 # AmazonDark.bundle so the tweak can read darkreader.js at runtime.
-AmazonDark_RESOURCE_DIRS = Resources
+AmazonDark_BUNDLE_RESOURCE_DIRS = Resources
 
 # Fail fast on the Logos %orig footgun (it deletes code and still exits 0).
 before-all::

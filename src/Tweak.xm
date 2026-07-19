@@ -111,6 +111,17 @@ static void ADOpenLog(void){
 }
 static void ADRaw(const char *s){ if (gFD >= 0){ write(gFD, s, strlen(s)); write(gFD, "\n", 1); } }
 
+// Formatted logging. Safe after launch (Obj-C available); never called from %ctor.
+static void ADLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
+static void ADLog(NSString *fmt, ...){
+    @try {
+        va_list ap; va_start(ap, fmt);
+        NSString *m = [[NSString alloc] initWithFormat:fmt arguments:ap];
+        va_end(ap);
+        ADRaw([[@"[AmazonDark] " stringByAppendingString:m] UTF8String]);
+    } @catch(...) {}
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // PREFERENCES
 // Read straight from the plist the settings bundle writes. We avoid a hard Cephei
@@ -171,6 +182,9 @@ static void ADLoadPrefs(void){
         ADPrefHex(d, @"fgHex", "#e8e6e3", gP.fgHex);
     } @catch(...) {}
     ADSyncColorEngine();
+    ADLog(@"prefs: enabled=%d web=%d nativeTheme=%d nativeRecolor=%d bright=%ld contrast=%ld gray=%ld sepia=%ld bg=%s fg=%s",
+          gP.enabled, gP.webDarkReader, gP.nativeTheme, gP.nativeRecolor,
+          gP.brightness, gP.contrast, gP.grayscale, gP.sepia, gP.bgHex, gP.fgHex);
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -197,8 +211,16 @@ static NSString *ADBundledDarkReaderJS(void){
             ];
             for (NSString *c in cands){
                 NSString *s = [NSString stringWithContentsOfFile:c encoding:NSUTF8StringEncoding error:nil];
-                if (s.length){ cached = s; break; }
+                if (s.length){
+                    cached = s;
+                    ADLog(@"darkreader.js loaded (%lu bytes) from %@", (unsigned long)s.length, c);
+                    break;
+                }
+                ADLog(@"darkreader.js NOT at %@", c);
             }
+            if (!cached.length)
+                ADLog(@"FATAL: darkreader.js missing — web surfaces will stay LIGHT. "
+                       "Check the package installed it under Application Support/AmazonDark.");
         }
     } @catch(...) {}
     return cached;
@@ -261,18 +283,22 @@ static void ADBootstrapDarkReaderIn(WKWebView *wv){
     } @catch(...) {}
 }
 
+static int gWebSeen = 0;
 static void ADWalkWebViews(UIView *v){
     @try {
-        if ([v isKindOfClass:[WKWebView class]]) ADEnableDarkReaderIn((WKWebView *)v);
+        if ([v isKindOfClass:[WKWebView class]]){ gWebSeen++; ADEnableDarkReaderIn((WKWebView *)v); }
         for (UIView *s in v.subviews) ADWalkWebViews(s);
     } @catch(...) {}
 }
 static void ADInjectAllWebViews(void){
     @try {
+        gWebSeen = 0;
         for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
             if (![sc isKindOfClass:[UIWindowScene class]]) continue;
             for (UIWindow *w in ((UIWindowScene *)sc).windows) ADWalkWebViews(w);
         }
+        static int lastReported = -1;
+        if (gWebSeen != lastReported){ ADLog(@"web views themed: %d", gWebSeen); lastReported = gWebSeen; }
     } @catch(...) {}
 }
 
