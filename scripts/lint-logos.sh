@@ -47,6 +47,19 @@ for f in "${files[@]}"; do
         | grep -nE '%orig(\([^)]*\))?[[:space:]]*;[[:space:]]*[^[:space:]]' \
         || true
     )
+
+    # Logos's %orig argument tokenizer also chokes on a nested call inside the
+    # parens, e.g. %orig(foo(x)) — resolve to a local and pass that instead.
+    while IFS=: read -r lineno content; do
+        [ -z "${lineno:-}" ] && continue
+        echo "  $f:$lineno: %orig has a nested call in its arguments"
+        echo "      $(echo "$content" | sed 's/^[[:space:]]*//')"
+        fail=1
+    done < <(
+        sed 's://.*::' "$f" \
+        | grep -nE '%orig\([^)]*\([^)]*\)' \
+        || true
+    )
 done
 
 if [ "$fail" -ne 0 ]; then

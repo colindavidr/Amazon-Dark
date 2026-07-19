@@ -143,6 +143,7 @@ typedef struct {
 
 static ADPrefs gP;
 static void ADSyncColorEngine(void);
+static UIColor *ADColorFromHex(const char *hex);
 
 static long ADPrefLong(NSDictionary *d, NSString *k, long def){
     id v = d[k]; return (v && [v respondsToSelector:@selector(longValue)]) ? [v longValue] : def;
@@ -229,9 +230,12 @@ static NSString *ADBundledDarkReaderJS(void){
 // The theme literal, built from live prefs (shared by both the heavy bootstrap and
 // the lightweight re-enable call).
 static NSString *ADThemeLiteral(void){
+    // mode:1 = dark. styleSystemControls themes form controls/scrollbars.
+    // The fixed/sticky headers Amazon uses respond better with these on.
     return [NSString stringWithFormat:
         @"{mode:1,brightness:%ld,contrast:%ld,sepia:%ld,grayscale:%ld,"
-         "darkSchemeBackgroundColor:'%s',darkSchemeTextColor:'%s'}",
+         "darkSchemeBackgroundColor:'%s',darkSchemeTextColor:'%s',"
+         "styleSystemControls:true}",
         gP.brightness, gP.contrast, gP.sepia, gP.grayscale, gP.bgHex, gP.fgHex];
 }
 
@@ -322,6 +326,11 @@ static void ADInjectAllWebViews(void){
     %orig;
     @try {
         if (!self.window || !gP.enabled || !gP.webDarkReader) return;
+        // Paint the web view's own backdrop dark up front so the white page has
+        // nothing to flash before Dark Reader paints the DOM. Cheap and idempotent.
+        self.opaque = NO;
+        self.backgroundColor = ADColorFromHex(gP.bgHex);
+        @try { [self setValue:ADColorFromHex(gP.bgHex) forKey:@"underPageBackgroundColor"]; } @catch(...) {}
         // Attach a documentStart user-script even to pre-initialised web views (e.g. the
         // warmed gateway) so a pull-to-refresh re-applies Dark Reader on the next load.
         static const void *kUS = &kUS;
@@ -568,6 +577,103 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 }
 %end
 
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3b — REACT NATIVE TEXT (the "text is almost as dark as the background")
+// ────────────────────────────────────────────────────────────────────────────────
+// This is the piece v5.0.3 was missing. React Native does NOT put text in a UILabel
+// with a settable textColor. RCTParagraphComponentView / RCTTextView hold an
+// NSAttributedString and draw it themselves in drawRect: via
+//   -drawAttributedString:paragraphAttributes:frame:drawHighlightPath:
+// The colour is baked into NSForegroundColorAttributeName runs inside that string,
+// so our UILabel/UITextView textColor hooks never see it. The RN background went
+// dark (UIView/CALayer hooks caught it) while the dark text stayed dark — hence
+// near-invisible labels on the account, cart and Alexa tabs.
+//
+// Fix: intercept the attributed string on its way in, walk every foreground-colour
+// run, and push each through the SAME foreground curve as everything else. Text
+// runs with no explicit colour default to black in RN, so a nil-colour run is
+// treated as black and lifted to the light pole too.
+// ════════════════════════════════════════════════════════════════════════════════
+
+static NSAttributedString *ADRecolorAttributedString(NSAttributedString *in){
+    if (!ADRecolorOn() || in.length == 0) return in;
+    @try {
+        NSMutableAttributedString *m = [in mutableCopy];
+        NSRange full = NSMakeRange(0, m.length);
+        [m enumerateAttribute:NSForegroundColorAttributeName inRange:full
+                      options:0
+                   usingBlock:^(id value, NSRange range, BOOL *stop){
+            @try {
+                UIColor *orig = [value isKindOfClass:[UIColor class]]
+                                ? (UIColor *)value
+                                : [UIColor blackColor];   // RN default text colour
+                UIColor *mod = ADModifyUIColor(orig, ADColorRoleForeground);
+                if (mod) [m addAttribute:NSForegroundColorAttributeName value:mod range:range];
+            } @catch(...) {}
+        }];
+        return m;
+    } @catch(...) { return in; }
+}
+
+// Fabric text (new architecture). Setter lives on RCTParagraphComponentView.
+%hook RCTParagraphComponentView
+- (void)setAttributedText:(NSAttributedString *)attributedText {
+    @try {
+        NSAttributedString *r = ADRecolorAttributedString(attributedText);
+        %orig(r);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+- (void)_setAttributedString:(NSAttributedString *)attributedString {
+    @try {
+        NSAttributedString *r = ADRecolorAttributedString(attributedString);
+        %orig(r);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// Paper text (old architecture) — still present in this binary.
+%hook RCTTextView
+- (void)setTextStorage:(NSTextStorage *)textStorage {
+    @try {
+        if (ADRecolorOn() && textStorage.length){
+            NSRange full = NSMakeRange(0, textStorage.length);
+            [textStorage enumerateAttribute:NSForegroundColorAttributeName inRange:full
+                                    options:0
+                                 usingBlock:^(id value, NSRange range, BOOL *stop){
+                @try {
+                    UIColor *orig = [value isKindOfClass:[UIColor class]]
+                                    ? (UIColor *)value : [UIColor blackColor];
+                    UIColor *mod = ADModifyUIColor(orig, ADColorRoleForeground);
+                    if (mod) [textStorage addAttribute:NSForegroundColorAttributeName
+                                                 value:mod range:range];
+                } @catch(...) {}
+            }];
+        }
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// Some Amazon custom labels vend an attributed string through UILabel directly.
+%hook UILabel
+- (void)setAttributedText:(NSAttributedString *)attributedText {
+    if (!ADRecolorOn() || !attributedText.length) {
+        %orig;
+        return;
+    }
+    @try {
+        NSAttributedString *r = ADRecolorAttributedString(attributedText);
+        %orig(r);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
 // ─── CALayer: catches React Native (Fabric sets layer colours directly) ───────────
 %hook CALayer
 - (void)setBackgroundColor:(CGColorRef)color {
@@ -650,10 +756,29 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 }
 %end
 
-%hook UIViewController
-- (UIStatusBarStyle)preferredStatusBarStyle {
-    if (gP.enabled) return UIStatusBarStyleLightContent;
-    return %orig;
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 4 — bottom nav toolbar chrome (the tab bar strip).
+// These Amazon container views sometimes assert an opaque light backdrop AFTER our
+// generic hooks run, so a plain colour swap can be overwritten. Forcing the fill in
+// layoutSubviews (which re-runs on every relayout) makes it stick. Image-safe: only
+// the container's own backgroundColor is touched, never any glyph/icon subview.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook CXIStoreModesBottomNavToolbar
+- (void)layoutSubviews {
+    %orig;
+    @try { if (gP.enabled) ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex); } @catch(...) {}
+}
+%end
+%hook CXIStoreModesTabBarView
+- (void)layoutSubviews {
+    %orig;
+    @try { if (gP.enabled) ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex); } @catch(...) {}
+}
+%end
+%hook ANPRetailTabBar
+- (void)layoutSubviews {
+    %orig;
+    @try { if (gP.enabled) ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex); } @catch(...) {}
 }
 %end
 
@@ -731,26 +856,56 @@ static void ADSweep(void){
     ADSweepAllWindows();
 }
 
-// ─── bounded launch-window timer ──────────────────────────────────────────────────
-// The old build swept every second for the life of the process. That meant a full
-// recursive walk of every window's view tree, on the main thread, forever — pure
-// battery burn once the app has settled, and a jank risk mid-scroll.
-//
-// It is also unnecessary. Once the hooks are installed, every NEW colour is themed
-// at assignment. Sweeping only exists to catch views built BEFORE injection (the
-// pre-warmed gateway, the splash stack), which is a launch-time problem with a
-// launch-time lifetime. So the timer now runs on a decaying cadence for ~30s and
-// then stops; anything later is covered by the hooks, the foreground observer, and
-// the prefs-changed observer below.
+// ─── decaying launch timer (bounded) ──────────────────────────────────────────────
+// Catches views built before injection. It stops after the launch window, but that
+// no longer leaves later tabs white: new web views re-theme themselves on mount
+// (WKWebView didMoveToWindow) and on the RN tab-switch hook below, and native views
+// are themed at assignment. So this timer is purely a launch-time backstop.
 static int gSweepTicks = 0;
 static void ADStartTimer(void){
-    if (gSweepTicks++ > 15) {           // ~30s of 2s ticks, then done
-        ADRaw("[AmazonDark] launch sweeps complete; hooks now steady-state");
+    if (gSweepTicks++ > 20) {           // ~40s, then done — events take over
+        ADRaw("[AmazonDark] launch sweeps complete; event-driven from here");
         return;
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2.0*NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{ ADSweep(); ADStartTimer(); });
 }
+
+// ─── event-driven re-theme on tab / screen change (kills the white flash) ──────────
+// The flashing you saw is a NEW web view being mounted for the tab you switch to:
+// for a few frames it shows its own white page before Dark Reader paints the DOM,
+// and if the launch timer had already stopped, nothing re-applied. Rather than run
+// a forever-timer, we re-theme exactly when the view hierarchy changes. A short
+// coalesced burst (0 / 60 / 200 / 500 ms) covers the mount-to-first-paint window
+// without a standing cost.
+static void ADReapplyBurst(void){
+    static const int64_t delays_ms[] = {0, 60, 200, 500};
+    for (int i = 0; i < 4; i++){
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delays_ms[i]*1000000LL),
+            dispatch_get_main_queue(), ^{ @try {
+                ADForceWindowsDarkTrait();
+                ADInjectAllWebViews();
+                ADSweepAllWindows();
+            } @catch(...) {} });
+    }
+}
+
+// UIViewController appearance is the most reliable, arch-agnostic signal for a tab
+// switch or push. Gate to controllers that actually host content so we do not fire
+// the burst for every cell-sized child VC.
+%hook UIViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    @try {
+        if (!ADRecolorOn()) return;
+        if (self.view.window && self.view.bounds.size.width > 200) ADReapplyBurst();
+    } @catch(...) {}
+}
+- (UIStatusBarStyle)preferredStatusBarStyle {
+    if (gP.enabled) return UIStatusBarStyleLightContent;
+    return %orig;
+}
+%end
 
 // ─── live settings reload ─────────────────────────────────────────────────────────
 // ADRootListController posts this Darwin notification on every toggle. Without an
@@ -787,7 +942,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.0.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.1.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
 
