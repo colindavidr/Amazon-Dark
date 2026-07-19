@@ -250,19 +250,39 @@ static NSString *ADDarkReaderBootstrap(void){
          "if(window.__AMZDARK_LOADED__)return;window.__AMZDARK_LOADED__=1;%@\n" // DarkReader UMD
          "if(window.DarkReader&&DarkReader.enable){"
          "try{DarkReader.setFetchMethod(window.fetch);}catch(e){}"
-         "window.__AMZDARK_APPLY__=function(){try{DarkReader.enable(%@);}catch(e){}};"
+         "window.__AMZDARK_APPLY__=function(){try{"
+           "var applied=document.querySelector('style.darkreader');"
+           "if(!applied){try{DarkReader.disable();}catch(e){}}"
+           "DarkReader.enable(%@);"
+         "}catch(e){}};"
          "window.__AMZDARK_APPLY__();"
+         // Re-apply when the page is restored from the back-forward cache (returning
+         // to a tab). pageshow.persisted is true exactly in that case, and it is the
+         // event that fires when no navigation happens — the cart's "went white on
+         // return" path. Also re-assert on visibility regain.
+         "try{window.addEventListener('pageshow',function(e){if(e.persisted)window.__AMZDARK_APPLY__();});}catch(e){}"
+         "try{document.addEventListener('visibilitychange',function(){if(!document.hidden)window.__AMZDARK_APPLY__();});}catch(e){}"
          "}}catch(e){}})();",
         dr, ADThemeLiteral()];
 }
 
-// LIGHT: re-apply the theme without re-parsing the engine. Safe to call on every
-// navigation / timer tick; no-ops until the heavy bootstrap has run for this document.
+// LIGHT: re-apply the theme. Must survive WebKit's back-forward cache: when you
+// leave a tab and return, the page can be restored from bfcache with NO new
+// navigation, so didFinishNavigation never fires — and the restored DOM has lost
+// Dark Reader's injected <style> elements while our __AMZDARK_LOADED__ flag may
+// still be set from the cached JS state. A plain enable() then early-returns and
+// the page stays light (the cart "went white after panning back").
+//
+// So this first checks whether Dark Reader is actually still applied — it leaves a
+// <style class="darkreader"> in the document — and if those are gone, it does a
+// full disable()+enable() to force a clean re-inject rather than trusting state.
 static NSString *ADDarkReaderReapply(void){
     return [NSString stringWithFormat:
         @"(function(){try{"
-         "if(window.__AMZDARK_APPLY__){window.__AMZDARK_APPLY__();}"
-         "else if(window.DarkReader&&DarkReader.enable){DarkReader.enable(%@);}"
+         "if(!(window.DarkReader&&DarkReader.enable))return;"
+         "var applied=document.querySelector('style.darkreader');"
+         "if(!applied){try{DarkReader.disable();}catch(e){}}"   // stale state: reset first
+         "DarkReader.enable(%@);"
          "}catch(e){}})();",
         ADThemeLiteral()];
 }
@@ -500,6 +520,21 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
         return;
     }
     @try {
+        // Kill translucent dark veils. A ~50%-opaque dark fill spread over a large
+        // view is a scrim sitting on top of content (the home-tab overlay the probe
+        // named: UIView rgba(0.09,0.10,0.11,0.50)). On a light UI it dims things a
+        // little; on our now-dark UI it just muddies the product cards underneath for
+        // no benefit. If a dark, half-transparent colour lands on a sizeable view,
+        // drop it to clear so the themed content shows through cleanly.
+        CGFloat r,g,b,a;
+        if ([color getRed:&r green:&g blue:&b alpha:&a]){
+            CGFloat lum = 0.2126*r + 0.7152*g + 0.0722*b;
+            if (a > 0.15 && a < 0.85 && lum < 0.25 &&
+                self.bounds.size.width > 120 && self.bounds.size.height > 120){
+                %orig([UIColor clearColor]);
+                return;
+            }
+        }
         UIColor *m = ADModifyUIColor(color, ADColorRoleBackground);
         if (!m) m = color;
         %orig(m);
@@ -894,8 +929,22 @@ static void ADProbeTree(UIView *v, int depth, int *found){
             // No backgroundColor at all but big and visible => probably drawRect: or a
             // UIImageView. Naming it tells us which of the two to chase.
             BOOL isImg = [v isKindOfClass:[UIImageView class]];
-            ADLog(@"  probe: NO-BG %s%s frame=%.0fx%.0f",
-                  object_getClassName(v), isImg ? " (UIImageView)" : " (drawRect?)",
+            // If it draws itself, does the class override drawRect: ? That is the
+            // signal for [UIColor set]/setFill painting our hooks should be catching.
+            BOOL drawsSelf = [v methodForSelector:@selector(drawRect:)] !=
+                             [UIView instanceMethodForSelector:@selector(drawRect:)];
+            // For image views, is the image a tiny resizable slice (a background) or a
+            // real picture? Tiny + tiled = a themeable chrome asset.
+            const char *imgInfo = "";
+            if (isImg){
+                UIImage *im = ((UIImageView *)v).image;
+                if (im && (im.size.width < 8 || im.size.height < 8)) imgInfo = " TINY-STRETCH-IMG";
+            }
+            ADLog(@"  probe: NO-BG %s%s%s%s frame=%.0fx%.0f",
+                  object_getClassName(v),
+                  isImg ? " IMAGEVIEW" : "",
+                  drawsSelf ? " DRAWS-SELF" : "",
+                  imgInfo,
                   v.bounds.size.width, v.bounds.size.height);
             (*found)++;
         }
@@ -1183,7 +1232,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.3.1 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.3.2 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
