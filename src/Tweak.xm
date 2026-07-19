@@ -333,6 +333,27 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                     [stSeen addObject:key];
                     ADLog(@"web state: %@ -> %@%@", u, st, err ? @" (evalError)" : @"");
                 }
+
+                // SELF-HEAL. 'noflag' means __AMZDARK_LOADED__ is absent, i.e. the
+                // documentStart WKUserScript never ran in THIS document — so the page
+                // has no engine to re-enable and every light-touch re-apply is a no-op.
+                // That is the real cart failure: not a bfcache restore (which would
+                // keep the flag and lose only the styles), but a fresh document our
+                // script never reached, because the web view was created or navigated
+                // outside the window in which we attach the script.
+                //
+                // Rather than chase every creation path, repair it here: inject the
+                // full engine directly into the live document. evaluateJavaScript does
+                // not care how the document came to exist, so this works regardless.
+                if ([st containsString:@"noflag"] || [st hasPrefix:@"noDR"]){
+                    NSString *full = ADDarkReaderBootstrap();
+                    if (full.length){
+                        ADLog(@"web repair: injecting full engine into %@", u);
+                        [wv evaluateJavaScript:full completionHandler:^(id r2, NSError *e2){
+                            if (e2) ADLog(@"web repair FAILED: %@", e2.localizedDescription);
+                        }];
+                    }
+                }
             } @catch(...) {}
         }];
     } @catch(...) {}
@@ -1287,7 +1308,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.4.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.4.1 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
