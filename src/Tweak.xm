@@ -274,8 +274,7 @@ static NSString *ADDarkReaderBootstrap(void){
          "if(window.DarkReader&&DarkReader.enable){"
          "try{DarkReader.setFetchMethod(window.fetch);}catch(e){}"
          "window.__AMZDARK_APPLY__=function(){try{"
-           "var applied=document.querySelector('style.darkreader');"
-           "if(!applied){try{DarkReader.disable();}catch(e){}}"
+           "if(document.querySelector('style.darkreader'))return;"   // themed: no-op
            "DarkReader.enable(%@,%@);"
          "}catch(e){}};"
          "window.__AMZDARK_APPLY__();"
@@ -289,22 +288,23 @@ static NSString *ADDarkReaderBootstrap(void){
         dr, ADThemeLiteral(), ADFixesLiteral()];
 }
 
-// LIGHT: re-apply the theme. Must survive WebKit's back-forward cache: when you
-// leave a tab and return, the page can be restored from bfcache with NO new
-// navigation, so didFinishNavigation never fires — and the restored DOM has lost
-// Dark Reader's injected <style> elements while our __AMZDARK_LOADED__ flag may
-// still be set from the cached JS state. A plain enable() then early-returns and
-// the page stays light (the cart "went white after panning back").
+// LIGHT: re-apply the theme. MUST be a no-op when the page is already themed.
 //
-// So this first checks whether Dark Reader is actually still applied — it leaves a
-// <style class="darkreader"> in the document — and if those are gone, it does a
-// full disable()+enable() to force a clean re-inject rather than trusting state.
+// This previously ran DarkReader.disable() whenever style.darkreader was missing,
+// then re-enabled. That call strips Dark Reader's stylesheet, so the page snaps to
+// stock white before going dark again — and because the burst fires it repeatedly
+// (0/60/200/500ms on every viewDidAppear, plus each sweep), the home tab visibly
+// flashed white/dark/white. It was added to fix the cart, but the cart's real cause
+// was 'noflag' (the user script never ran in that document), which the self-heal
+// below handles. So the disable() was solving a problem that did not exist while
+// creating one that did. Removed.
+//
+// Now: if the stylesheet is present the page is themed and we touch nothing.
 static NSString *ADDarkReaderReapply(void){
     return [NSString stringWithFormat:
         @"(function(){try{"
          "if(!(window.DarkReader&&DarkReader.enable))return;"
-         "var applied=document.querySelector('style.darkreader');"
-         "if(!applied){try{DarkReader.disable();}catch(e){}}"   // stale state: reset first
+         "if(document.querySelector('style.darkreader'))return;"   // themed: leave alone
          "DarkReader.enable(%@,%@);"
          "}catch(e){}})();",
         ADThemeLiteral(), ADFixesLiteral()];
@@ -362,12 +362,19 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                 // full engine directly into the live document. evaluateJavaScript does
                 // not care how the document came to exist, so this works regardless.
                 if ([st containsString:@"noflag"] || [st hasPrefix:@"noDR"]){
-                    NSString *full = ADDarkReaderBootstrap();
-                    if (full.length){
-                        ADLog(@"web repair: injecting full engine into %@", u);
-                        [wv evaluateJavaScript:full completionHandler:^(id r2, NSError *e2){
-                            if (e2) ADLog(@"web repair FAILED: %@", e2.localizedDescription);
-                        }];
+                    // Once per document. Without this guard every burst tick re-injects
+                    // the 346KB engine, which is wasteful and visibly disruptive.
+                    static NSMutableSet *repaired = nil;
+                    if (!repaired) repaired = [NSMutableSet set];
+                    if (![repaired containsObject:u]){
+                        [repaired addObject:u];
+                        NSString *full = ADDarkReaderBootstrap();
+                        if (full.length){
+                            ADLog(@"web repair: injecting full engine into %@", u);
+                            [wv evaluateJavaScript:full completionHandler:^(id r2, NSError *e2){
+                                if (e2) ADLog(@"web repair FAILED: %@", e2.localizedDescription);
+                            }];
+                        }
                     }
                 }
             } @catch(...) {}
@@ -1298,6 +1305,13 @@ static void ADReapplyBurst(void){
     @try {
         if (!ADRecolorOn()) return;
         if (self.view.window && self.view.bounds.size.width > 200){
+            NSString *vcKey = [NSString stringWithUTF8String:object_getClassName(self)];
+            static NSMutableSet *vcSeen = nil;
+            if (!vcSeen) vcSeen = [NSMutableSet set];
+            if (![vcSeen containsObject:vcKey]){
+                [vcSeen addObject:vcKey];
+                ADLog(@"screen: %@", vcKey);
+            }
             gProbeArmed = YES;
             ADReapplyBurst();
             // Probe after the burst has settled, so we only report genuine hold-outs.
@@ -1347,7 +1361,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.5.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.5.1 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
