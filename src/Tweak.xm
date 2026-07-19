@@ -230,6 +230,13 @@ static NSString *ADBundledDarkReaderJS(void){
 
 // The theme literal, built from live prefs (shared by both the heavy bootstrap and
 // the lightweight re-enable call).
+// Fixes object passed as enable()'s 2nd argument. ignoreImageAnalysis:['*'] stops
+// Dark Reader hiding / inverting / solid-filling images — the home-tab product veil.
+// This is the web-side half of the project's core promise: never touch imagery.
+static NSString *ADFixesLiteral(void){
+    return @"{css:'',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}";
+}
+
 static NSString *ADThemeLiteral(void){
     // mode:1 = dark. styleSystemControls themes form controls/scrollbars.
     // The fixed/sticky headers Amazon uses respond better with these on.
@@ -253,7 +260,7 @@ static NSString *ADDarkReaderBootstrap(void){
          "window.__AMZDARK_APPLY__=function(){try{"
            "var applied=document.querySelector('style.darkreader');"
            "if(!applied){try{DarkReader.disable();}catch(e){}}"
-           "DarkReader.enable(%@);"
+           "DarkReader.enable(%@,%@);"
          "}catch(e){}};"
          "window.__AMZDARK_APPLY__();"
          // Re-apply when the page is restored from the back-forward cache (returning
@@ -263,7 +270,7 @@ static NSString *ADDarkReaderBootstrap(void){
          "try{window.addEventListener('pageshow',function(e){if(e.persisted)window.__AMZDARK_APPLY__();});}catch(e){}"
          "try{document.addEventListener('visibilitychange',function(){if(!document.hidden)window.__AMZDARK_APPLY__();});}catch(e){}"
          "}}catch(e){}})();",
-        dr, ADThemeLiteral()];
+        dr, ADThemeLiteral(), ADFixesLiteral()];
 }
 
 // LIGHT: re-apply the theme. Must survive WebKit's back-forward cache: when you
@@ -282,9 +289,9 @@ static NSString *ADDarkReaderReapply(void){
          "if(!(window.DarkReader&&DarkReader.enable))return;"
          "var applied=document.querySelector('style.darkreader');"
          "if(!applied){try{DarkReader.disable();}catch(e){}}"   // stale state: reset first
-         "DarkReader.enable(%@);"
+         "DarkReader.enable(%@,%@);"
          "}catch(e){}})();",
-        ADThemeLiteral()];
+        ADThemeLiteral(), ADFixesLiteral()];
 }
 
 static void ADEnableDarkReaderIn(WKWebView *wv){
@@ -304,6 +311,30 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
             [seen addObject:u];
             ADLog(@"web themed: %@", u);
         }
+
+        // Report the page's ACTUAL state back into the log. The cart keeps reverting
+        // to light on tab-return and two rounds of native-side timing fixes have not
+        // held, so stop inferring: ask the document directly whether the engine is
+        // loaded, whether its stylesheet is still attached, and what readyState it is
+        // in. Deduped per URL+state so it cannot spam.
+        [wv evaluateJavaScript:
+            @"(function(){try{return (window.DarkReader?'DR':'noDR')+'/'"
+             "+(document.querySelector('style.darkreader')?'styled':'NOSTYLE')+'/'"
+             "+(window.__AMZDARK_LOADED__?'flag':'noflag')+'/'+document.readyState;}"
+             "catch(e){return 'err';}})()"
+             completionHandler:^(id result, NSError *err){
+            @try {
+                NSString *st = [result isKindOfClass:[NSString class]] ? (NSString *)result
+                                                                       : @"(nonstring)";
+                NSString *key = [NSString stringWithFormat:@"%@|%@", u, st];
+                static NSMutableSet *stSeen = nil;
+                if (!stSeen) stSeen = [NSMutableSet set];
+                if (![stSeen containsObject:key]){
+                    [stSeen addObject:key];
+                    ADLog(@"web state: %@ -> %@%@", u, st, err ? @" (evalError)" : @"");
+                }
+            } @catch(...) {}
+        }];
     } @catch(...) {}
 }
 
@@ -899,6 +930,18 @@ static NSAttributedString *ADRecolorAttributedString(NSAttributedString *in){
 // cannot spam the log or cost anything meaningful on the main thread.
 static BOOL  gProbeArmed  = NO;
 static int   gProbeReports = 0;
+// Dedupe by identity rather than capping the number of runs. The old hard cap of 6
+// reports was consumed during launch, so by the time a problem tab was opened the
+// probe had permanently stopped — which is exactly why the hamburger returned no
+// diagnostics. Reporting each distinct offender once keeps it alive indefinitely
+// without spamming.
+static NSMutableSet *gProbeSeen = nil;
+static BOOL ADProbeFirstTime(NSString *key){
+    if (!gProbeSeen) gProbeSeen = [NSMutableSet set];
+    if ([gProbeSeen containsObject:key]) return NO;
+    [gProbeSeen addObject:key];
+    return YES;
+}
 
 static void ADProbeTree(UIView *v, int depth, int *found){
     if (!v || depth > 40 || *found >= 25) return;
@@ -913,16 +956,24 @@ static void ADProbeTree(UIView *v, int depth, int *found){
             if ([bg getRed:&r green:&g blue:&b alpha:&a] && a > 0.2){
                 CGFloat lum = 0.2126*r + 0.7152*g + 0.0722*b;
                 if (lum > 0.55){                     // still light => an offender
-                    ADLog(@"  probe: LIGHT bg %s rgba(%.2f,%.2f,%.2f,%.2f) frame=%.0fx%.0f",
-                          object_getClassName(v), r,g,b,a,
-                          v.bounds.size.width, v.bounds.size.height);
-                    (*found)++;
+                    NSString *k = [NSString stringWithFormat:@"L%s%.0fx%.0f",
+                                   object_getClassName(v), v.bounds.size.width, v.bounds.size.height];
+                    if (ADProbeFirstTime(k)){
+                        ADLog(@"  probe: LIGHT bg %s rgba(%.2f,%.2f,%.2f,%.2f) frame=%.0fx%.0f",
+                              object_getClassName(v), r,g,b,a,
+                              v.bounds.size.width, v.bounds.size.height);
+                        (*found)++;
+                    }
                 } else if (a < 0.95 && lum < 0.35 && v.bounds.size.width > 100){
                     // Dark AND translucent over a large area = the veil on the home tab.
-                    ADLog(@"  probe: DARK-OVERLAY %s rgba(%.2f,%.2f,%.2f,%.2f) frame=%.0fx%.0f",
-                          object_getClassName(v), r,g,b,a,
-                          v.bounds.size.width, v.bounds.size.height);
-                    (*found)++;
+                    NSString *k = [NSString stringWithFormat:@"O%s%.0fx%.0f",
+                                   object_getClassName(v), v.bounds.size.width, v.bounds.size.height];
+                    if (ADProbeFirstTime(k)){
+                        ADLog(@"  probe: DARK-OVERLAY %s rgba(%.2f,%.2f,%.2f,%.2f) frame=%.0fx%.0f",
+                              object_getClassName(v), r,g,b,a,
+                              v.bounds.size.width, v.bounds.size.height);
+                        (*found)++;
+                    }
                 }
             }
         } else if (v.bounds.size.width > 150 && v.bounds.size.height > 60 && !v.hidden) {
@@ -940,20 +991,24 @@ static void ADProbeTree(UIView *v, int depth, int *found){
                 UIImage *im = ((UIImageView *)v).image;
                 if (im && (im.size.width < 8 || im.size.height < 8)) imgInfo = " TINY-STRETCH-IMG";
             }
-            ADLog(@"  probe: NO-BG %s%s%s%s frame=%.0fx%.0f",
-                  object_getClassName(v),
-                  isImg ? " IMAGEVIEW" : "",
-                  drawsSelf ? " DRAWS-SELF" : "",
-                  imgInfo,
-                  v.bounds.size.width, v.bounds.size.height);
-            (*found)++;
+            NSString *k = [NSString stringWithFormat:@"N%s%.0fx%.0f",
+                           object_getClassName(v), v.bounds.size.width, v.bounds.size.height];
+            if (ADProbeFirstTime(k)){
+                ADLog(@"  probe: NO-BG %s%s%s%s frame=%.0fx%.0f",
+                      object_getClassName(v),
+                      isImg ? " IMAGEVIEW" : "",
+                      drawsSelf ? " DRAWS-SELF" : "",
+                      imgInfo,
+                      v.bounds.size.width, v.bounds.size.height);
+                (*found)++;
+            }
         }
         for (UIView *s in v.subviews) ADProbeTree(s, depth+1, found);
     } @catch(...) {}
 }
 
 static void ADRunProbe(void){
-    if (!gProbeArmed || gProbeReports >= 6) return;
+    if (!gProbeArmed) return;
     gProbeArmed = NO;
     gProbeReports++;
     @try {
@@ -1232,7 +1287,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.3.2 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.4.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
