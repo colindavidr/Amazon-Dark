@@ -36,6 +36,11 @@ typedef NS_ENUM(NSInteger, ADColorRole) {
     ADColorRoleBackground = 0,
     ADColorRoleForeground = 1,
     ADColorRoleBorder     = 2,
+    /// For drawRect: painting, where we cannot know whether a colour is about to
+    /// fill a panel or draw text. Picks the curve from the colour's own lightness:
+    /// light fills darken, dark fills lighten. That preserves contrast direction
+    /// instead of crushing custom-drawn text into its own background.
+    ADColorRoleAuto       = 3,
 };
 
 /// Mirrors the subset of Dark Reader's `Theme` we expose in Settings.

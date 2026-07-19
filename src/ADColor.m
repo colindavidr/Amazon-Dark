@@ -221,6 +221,12 @@ void ADModifyRGB(ADColorRole role,
     ADHSL poleBg = ADRGBToHSL(ADTheme.bgR / 255.0, ADTheme.bgG / 255.0, ADTheme.bgB / 255.0);
     ADHSL poleFg = ADRGBToHSL(ADTheme.fgR / 255.0, ADTheme.fgG / 255.0, ADTheme.fgB / 255.0);
 
+    // Auto: decide by lightness before dispatching.
+    if (role == ADColorRoleAuto) {
+        ADHSL probe = ADRGBToHSL(r, g, b);
+        role = (probe.l < 0.5) ? ADColorRoleForeground : ADColorRoleBackground;
+    }
+
     ADHSL mod;
     switch (role) {
         case ADColorRoleForeground: mod = ADModifyFgHSL(in, poleFg);          break;
@@ -312,6 +318,26 @@ UIColor *ADModifyUIColor(UIColor *c, ADColorRole role) {
     if (!ADRGBAOf(c, &r, &g, &b, &a)) return nil;      // pattern / unsupported space
     if (a <= 0.001) return nil;                        // fully transparent: nothing to do
     if (ADIsModifiedUIColor(c)) return nil;            // already ours
+
+    // Resolve Auto up-front so the memo key matches the curve actually used.
+    if (role == ADColorRoleAuto) {
+        ADHSL probe = ADRGBToHSL(r, g, b);
+        role = (probe.l < 0.5) ? ADColorRoleForeground : ADColorRoleBackground;
+    }
+
+    // SCRIM GUARD. A partially transparent LIGHT fill can be an overlay sitting on
+    // top of imagery — a gradient scrim over a hero shot, a press-state highlight,
+    // a fade at the edge of a carousel. Flipping those to a dark fill does not
+    // "darken the background", it drops a black veil over the picture.
+    //
+    // But translucent CHROME (nav bars, search fields, sheet backdrops) lives in the
+    // same alpha range and absolutely must darken, so the first version of this guard
+    // was far too broad and left the top bar light. Narrowed to the case that
+    // actually indicates an image overlay: quite transparent AND near-white.
+    if (role == ADColorRoleBackground && a < 0.35){
+        CGFloat lum = 0.2126*r + 0.7152*g + 0.0722*b;
+        if (lum > 0.80) return nil;
+    }
 
     uint32_t key = ADPack(r, g, b, role);
     uint32_t packed;

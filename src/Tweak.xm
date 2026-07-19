@@ -144,6 +144,7 @@ typedef struct {
 static ADPrefs gP;
 static void ADSyncColorEngine(void);
 static UIColor *ADColorFromHex(const char *hex);
+static void ADRunProbe(void);
 
 static long ADPrefLong(NSDictionary *d, NSString *k, long def){
     id v = d[k]; return (v && [v respondsToSelector:@selector(longValue)]) ? [v longValue] : def;
@@ -782,6 +783,124 @@ static NSAttributedString *ADRecolorAttributedString(NSAttributedString *in){
 }
 %end
 
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3c — drawRect: painting (the gap that left whole panels white)
+// ────────────────────────────────────────────────────────────────────────────────
+// A view that paints itself in drawRect: never assigns a backgroundColor. It calls
+// [someColor setFill] / [someColor set] and fills a rect. Nothing in the UIView or
+// CALayer hooks can see that, so those panels stayed exactly as Amazon drew them —
+// which is what the white "lattice" on the hamburger tab and the white boxes on the
+// account tab are. Routing the paint colours through the same curve fixes the whole
+// class of them at once, without naming a single Amazon class.
+//
+// Images are unaffected: this intercepts *fill/stroke colours*, never image drawing.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook UIColor
+- (void)set {
+    if (!ADRecolorOn()) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(self, ADColorRoleAuto);
+        if (m) {
+            [m set];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+- (void)setFill {
+    if (!ADRecolorOn()) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(self, ADColorRoleAuto);
+        if (m) {
+            [m setFill];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+- (void)setStroke {
+    if (!ADRecolorOn()) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(self, ADColorRoleBorder);
+        if (m) {
+            [m setStroke];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// DIAGNOSTIC PROBE — make the tweak tell us what is still light.
+// ────────────────────────────────────────────────────────────────────────────────
+// Three rounds of inferring from screenshots has not converged, because a white
+// panel can be a UIView background, a drawRect: fill, a UIImage, or a web surface,
+// and they look identical in a photo but need completely different fixes. This walks
+// the live hierarchy and logs the CLASS of anything still rendering light, plus how
+// it is coloured. One line per offender tells us which mechanism to target.
+//
+// Throttled hard: at most one report per screen appearance and capped entries, so it
+// cannot spam the log or cost anything meaningful on the main thread.
+static BOOL  gProbeArmed  = NO;
+static int   gProbeReports = 0;
+
+static void ADProbeTree(UIView *v, int depth, int *found){
+    if (!v || depth > 40 || *found >= 25) return;
+    @try {
+        if (ADIsWebKitOwned(v)) {
+            ADLog(@"  probe: WEBVIEW %s (Dark Reader territory)", object_getClassName(v));
+            return;
+        }
+        UIColor *bg = v.backgroundColor;
+        if (bg){
+            CGFloat r,g,b,a;
+            if ([bg getRed:&r green:&g blue:&b alpha:&a] && a > 0.2){
+                CGFloat lum = 0.2126*r + 0.7152*g + 0.0722*b;
+                if (lum > 0.55){                     // still light => an offender
+                    ADLog(@"  probe: LIGHT bg %s rgba(%.2f,%.2f,%.2f,%.2f) frame=%.0fx%.0f",
+                          object_getClassName(v), r,g,b,a,
+                          v.bounds.size.width, v.bounds.size.height);
+                    (*found)++;
+                }
+            }
+        } else if (v.bounds.size.width > 150 && v.bounds.size.height > 60 && !v.hidden) {
+            // No backgroundColor at all but big and visible => probably drawRect: or a
+            // UIImageView. Naming it tells us which of the two to chase.
+            BOOL isImg = [v isKindOfClass:[UIImageView class]];
+            ADLog(@"  probe: NO-BG %s%s frame=%.0fx%.0f",
+                  object_getClassName(v), isImg ? " (UIImageView)" : " (drawRect?)",
+                  v.bounds.size.width, v.bounds.size.height);
+            (*found)++;
+        }
+        for (UIView *s in v.subviews) ADProbeTree(s, depth+1, found);
+    } @catch(...) {}
+}
+
+static void ADRunProbe(void){
+    if (!gProbeArmed || gProbeReports >= 6) return;
+    gProbeArmed = NO;
+    gProbeReports++;
+    @try {
+        int found = 0;
+        ADLog(@"── probe #%d: scanning for surfaces still light ──", gProbeReports);
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *w in ((UIWindowScene *)sc).windows) ADProbeTree(w, 0, &found);
+        }
+        ADLog(@"── probe #%d complete: %d offender(s) ──", gProbeReports, found);
+    } @catch(...) {}
+}
+
 // ─── catch-up sweep ───────────────────────────────────────────────────────────────
 // Views built before our hooks installed (the pre-warmed gateway, the splash stack)
 // already hold light colours. Re-assigning a view's own colour runs it through the
@@ -898,7 +1017,13 @@ static void ADReapplyBurst(void){
     %orig;
     @try {
         if (!ADRecolorOn()) return;
-        if (self.view.window && self.view.bounds.size.width > 200) ADReapplyBurst();
+        if (self.view.window && self.view.bounds.size.width > 200){
+            gProbeArmed = YES;
+            ADReapplyBurst();
+            // Probe after the burst has settled, so we only report genuine hold-outs.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 900*1000000LL),
+                dispatch_get_main_queue(), ^{ ADRunProbe(); });
+        }
     } @catch(...) {}
 }
 - (UIStatusBarStyle)preferredStatusBarStyle {
@@ -942,9 +1067,20 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.1.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.2.1 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
+    {
+        const char *names[] = {"RCTParagraphComponentView","RCTTextView","RCTViewComponentView",
+                               "CXIStoreModesBottomNavToolbar","CXIStoreModesTabBarView",
+                               "ANPRetailTabBar","ANXDarkModeServiceImpl"};
+        for (unsigned i = 0; i < sizeof(names)/sizeof(names[0]); i++){
+            char buf[160];
+            snprintf(buf, sizeof(buf), "[AmazonDark] class %s: %s",
+                     names[i], objc_getClass(names[i]) ? "FOUND" : "MISSING (hook inert)");
+            ADRaw(buf);
+        }
+    }
 
     dispatch_async(dispatch_get_main_queue(), ^{
         ADLoadPrefs();
