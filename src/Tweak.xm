@@ -901,6 +901,87 @@ static void ADRunProbe(void){
     } @catch(...) {}
 }
 
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3d — REACT NATIVE VIEW BACKGROUNDS
+// ────────────────────────────────────────────────────────────────────────────────
+// The probe proved these were unreachable: RCTScrollView and the account-menu tiles
+// held pure opaque white through every sweep. Two reasons, both structural.
+//
+//  1. Obj-C dispatch. RCTView overrides setBackgroundColor:, so a %hook on UIView
+//     is simply never consulted for it — the subclass implementation wins.
+//  2. RN's override early-returns when the incoming colour isEqual: the stored one.
+//
+// Hooking the RN classes themselves fixes (1); the sweep now passing a transformed
+// colour fixes (2). Both are needed — the hook catches live updates, the sweep
+// catches anything built before we attached.
+//
+// Still image-safe: these set a view's own background fill, never layer.contents.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook RCTView
+- (void)setBackgroundColor:(UIColor *)backgroundColor {
+    if (!ADRecolorOn() || !backgroundColor) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(backgroundColor, ADColorRoleBackground);
+        if (!m) m = backgroundColor;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook RCTScrollView
+- (void)setBackgroundColor:(UIColor *)backgroundColor {
+    if (!ADRecolorOn() || !backgroundColor) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(backgroundColor, ADColorRoleBackground);
+        if (!m) m = backgroundColor;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook RCTViewComponentView
+- (void)setBackgroundColor:(UIColor *)backgroundColor {
+    if (!ADRecolorOn() || !backgroundColor) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(backgroundColor, ADColorRoleBackground);
+        if (!m) m = backgroundColor;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// RN text colour also arrives as a discrete attribute object on the Paper path.
+%hook RCTTextAttributes
+- (void)setForegroundColor:(UIColor *)foregroundColor {
+    if (!ADRecolorOn() || !foregroundColor) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(foregroundColor, ADColorRoleForeground);
+        if (!m) m = foregroundColor;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
 // ─── catch-up sweep ───────────────────────────────────────────────────────────────
 // Views built before our hooks installed (the pre-warmed gateway, the splash stack)
 // already hold light colours. Re-assigning a view's own colour runs it through the
@@ -911,11 +992,29 @@ static void ADSweepViewTree(UIView *v, int depth){
     @try {
         if (ADIsWebKitOwned(v)) return;                 // Dark Reader's territory
         UIColor *bg = v.backgroundColor;
-        if (bg && !ADIsModifiedUIColor(bg)) v.backgroundColor = bg;   // re-runs the hook
+        if (bg && !ADIsModifiedUIColor(bg)) {
+            // Assign the TRANSFORMED colour, never the same object back.
+            //
+            // The old code did `v.backgroundColor = bg` and relied on our UIView hook
+            // to convert it in flight. That fails twice over on React Native views:
+            // RCTView overrides setBackgroundColor: (so the UIView hook never runs for
+            // it), and its override early-returns when the new value isEqual: the one
+            // it already holds — so handing back the identical object was a guaranteed
+            // no-op. That is why RCTScrollView and the four 94x39 account-menu tiles
+            // stayed pure white through every sweep.
+            //
+            // Passing a genuinely different colour object satisfies the equality check
+            // and works regardless of whether a subclass overrides the setter.
+            UIColor *m = ADModifyUIColor(bg, ADColorRoleBackground);
+            if (m) v.backgroundColor = m;
+        }
         if ([v isKindOfClass:[UILabel class]]){
             UILabel *l = (UILabel *)v;
             UIColor *tc = l.textColor;
-            if (tc && !ADIsModifiedUIColor(tc)) l.textColor = tc;
+            if (tc && !ADIsModifiedUIColor(tc)) {
+                UIColor *mt = ADModifyUIColor(tc, ADColorRoleForeground);
+                if (mt) l.textColor = mt;
+            }
         }
         for (UIView *s in v.subviews) ADSweepViewTree(s, depth + 1);
     } @catch(...) {}
@@ -1067,11 +1166,12 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.2.1 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.3.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
         const char *names[] = {"RCTParagraphComponentView","RCTTextView","RCTViewComponentView",
+                               "RCTScrollView","RCTTextAttributes",
                                "CXIStoreModesBottomNavToolbar","CXIStoreModesTabBarView",
                                "ANPRetailTabBar","ANXDarkModeServiceImpl"};
         for (unsigned i = 0; i < sizeof(names)/sizeof(names[0]); i++){
