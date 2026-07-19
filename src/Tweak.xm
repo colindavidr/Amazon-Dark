@@ -247,6 +247,7 @@ static NSString *ADFixesLiteral(void){
     // NSString-escaped CSS. \\n keeps it readable in the log if dumped.
     return @"{css:'"
             "img,picture,video,canvas,svg{filter:none !important;opacity:1 !important;}"
+            "[style*=\"background-image\"]{filter:none !important;}"
             "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}";
 }
 
@@ -387,9 +388,18 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                              "out.push('IMG{filter='+cs.filter+',op='+cs.opacity"
                                "+',blend='+cs.mixBlendMode+',bg='+cs.backgroundColor"
                                "+'} cover='+cover);}"
+                           "var bgEls=[].slice.call(document.querySelectorAll('div,span,a'))"
+                             ".filter(function(e){var c=getComputedStyle(e);"
+                               "if(c.backgroundImage.indexOf('url(')<0)return false;"
+                               "var r=e.getBoundingClientRect();return r.width>=80&&r.height>=80;});"
+                           "for(var m=0;m<bgEls.length&&m<2;m++){var be=bgEls[m];"
+                             "var bc=getComputedStyle(be);"
+                             "out.push('BGEL{filter='+bc.filter+',op='+bc.opacity"
+                               "+',bg='+bc.backgroundColor+',bgi='+bc.backgroundImage.slice(0,50)+'}');}"
                            "var htmlF=getComputedStyle(document.documentElement).filter;"
                            "var bodyF=getComputedStyle(document.body).filter;"
-                           "return 'big='+big.length+' htmlFilter='+htmlF+' bodyFilter='+bodyF"
+                           "return 'img='+big.length+' bgEl='+bgEls.length"
+                             "+' htmlFilter='+htmlF+' bodyFilter='+bodyF"
                              "+' || '+out.join(' || ');"
                            "}catch(e){return 'err:'+e;}})()";
                         [wv evaluateJavaScript:probe completionHandler:^(id r3, NSError *e3){
@@ -401,21 +411,45 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                     }
                 }
                 if ([st containsString:@"noflag"] || [st hasPrefix:@"noDR"]){
+                    // ROOT-CAUSE HALF. noflag recurring on every navigation means our
+                    // documentStart user script is not present on this web view's content
+                    // controller any more. The binary exports removeAllUserScripts and an
+                    // AMIPrewarmWebviewTask, so Amazon both prewarms web views (created
+                    // before we could hook init) and clears user scripts on reuse. Healing
+                    // the current document alone therefore fixes one page and leaves the
+                    // NEXT navigation unthemed — which is precisely the observed cycle:
+                    // noflag -> repair -> dark -> navigate -> noflag -> repair ...
+                    //
+                    // So re-attach the script here. Once it is back on the controller the
+                    // next document is themed at documentStart, before first paint, and
+                    // there is no white gap to repair.
+                    @try {
+                        WKUserContentController *ucc = wv.configuration.userContentController;
+                        Class WKUS = NSClassFromString(@"WKUserScript");
+                        NSString *boot = ADDarkReaderBootstrap();
+                        if (ucc && WKUS && boot.length){
+                            BOOL present = NO;
+                            for (WKUserScript *existing in ucc.userScripts){
+                                if ([existing.source containsString:@"__AMZDARK_LOADED__"]){
+                                    present = YES;
+                                    break;
+                                }
+                            }
+                            if (!present){
+                                WKUserScript *us =
+                                    [[WKUS alloc] initWithSource:boot
+                                                   injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                                forMainFrameOnly:NO];
+                                [ucc addUserScript:us];
+                                ADLog(@"web: user script re-attached (was stripped) for %@", u);
+                            }
+                        }
+                    } @catch(...) {}
+
                     // Re-heal EVERY time the document is unthemed, not once per URL.
-                    //
-                    // The previous guard keyed on the URL, but Amazon reuses a fixed
-                    // URL per tab (/gp/cart/view.html, mshop.html) across many document
-                    // lifetimes: leave the tab, the web view is torn down, return and a
-                    // FRESH document loads at the SAME url that our user script again
-                    // missed (noflag). With a URL guard the first visit healed and every
-                    // later one was skipped — so the tab alternated dark/light with the
-                    // web-view lifecycle. That is the cart/shopping flip.
-                    //
-                    // Guard instead on the document's identity: heal once per loaded
-                    // document, but a new document at the same URL is a new identity, so
-                    // it heals again. __AMZDARK_HEALED__ is set on window (cleared with
-                    // every fresh document), so its absence means "this document has not
-                    // been healed yet" regardless of how many times the URL has appeared.
+                    // Guard on DOCUMENT identity: __AMZDARK_HEALED__ lives on window, so a
+                    // fresh document at a reused URL heals again while a single document is
+                    // never re-injected (no flash, no wasted 346KB parse).
                     NSString *heal =
                         @"(function(){try{"
                          "if(window.__AMZDARK_HEALED__)return 'already';"
@@ -471,6 +505,34 @@ static void ADInjectAllWebViews(void){
         if (gWebSeen != lastReported){ ADLog(@"web views themed: %d", gWebSeen); lastReported = gWebSeen; }
     } @catch(...) {}
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// WKUserContentController — restore our script the moment Amazon strips it.
+// ────────────────────────────────────────────────────────────────────────────────
+// The binary exports removeAllUserScripts and AMIPrewarmWebviewTask: Amazon prewarms
+// web views and clears their user scripts on reuse. That is why 'noflag' recurred on
+// every navigation no matter how many times we healed the current document — the
+// documentStart hook was being removed behind us, so each new page painted white
+// before the repair could land. Re-adding immediately after the strip means the next
+// document is themed at documentStart, before first paint, so there is no white gap
+// at all rather than a gap we race to patch.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook WKUserContentController
+- (void)removeAllUserScripts {
+    %orig;
+    @try {
+        if (!gP.enabled || !gP.webDarkReader) return;
+        NSString *boot = ADDarkReaderBootstrap();
+        Class WKUS = NSClassFromString(@"WKUserScript");
+        if (!boot.length || !WKUS) return;
+        WKUserScript *us = [[WKUS alloc] initWithSource:boot
+                                          injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                       forMainFrameOnly:NO];
+        [self addUserScript:us];
+        ADLog(@"web: user script restored after removeAllUserScripts");
+    } @catch(...) {}
+}
+%end
 
 %hook WKWebView
 - (id)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)cfg {
@@ -1459,7 +1521,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.6.2 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.7.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
