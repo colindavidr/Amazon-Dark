@@ -314,7 +314,10 @@ static void ADInjectAllWebViews(void){
         ADBootstrapDarkReaderIn(self); // engine into the already-rendered document (idempotent)
     } @catch(...) {}
 }
-- (void)webView:(WKWebView *)wv didFinishNavigation:(id)nav { %orig; ADEnableDarkReaderIn(self); }
+- (void)webView:(WKWebView *)wv didFinishNavigation:(id)nav {
+    %orig;
+    ADEnableDarkReaderIn(self);
+}
 %end
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -323,9 +326,12 @@ static void ADInjectAllWebViews(void){
 
 // Force the two computed booleans the whole native theme keys off of.
 %hook ANXDarkModeServiceImpl
-- (BOOL)isDarkModeExperienceEnabled { if (gP.enabled && gP.nativeTheme) return YES; return %orig; }
-- (BOOL)isDarkModeExperienceActive  { if (gP.enabled && gP.nativeTheme) return YES; return %orig; }
-- (BOOL)systemDarkModeActive        { if (gP.enabled && gP.nativeTheme) return YES; return %orig; }
+- (BOOL)isDarkModeExperienceEnabled { if (gP.enabled && gP.nativeTheme) return YES; return %orig;
+}
+- (BOOL)isDarkModeExperienceActive  { if (gP.enabled && gP.nativeTheme) return YES; return %orig;
+}
+- (BOOL)systemDarkModeActive        { if (gP.enabled && gP.nativeTheme) return YES; return %orig;
+}
 %end
 
 // Lock the Weblab treatment for the dark experiment so every downstream consumer
@@ -442,7 +448,10 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 // ─── UIView / UILabel / controls ──────────────────────────────────────────────────
 %hook UIView
 - (void)setBackgroundColor:(UIColor *)color {
-    if (!ADRecolorOn() || !color || ADIsWebKitOwned(self)) { %orig; return; }
+    if (!ADRecolorOn() || !color || ADIsWebKitOwned(self)) {
+        %orig;
+        return;
+    }
     @try {
         UIColor *m = ADModifyUIColor(color, ADColorRoleBackground);
         if (!m) m = color;
@@ -455,7 +464,10 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
     // Template images (tab-bar glyphs, chevrons, the cart icon) are tinted, not
     // drawn. Treating tint as foreground is what keeps those icons visible once
     // the bar behind them goes dark — the failure mode that broke v3.2.1.
-    if (!ADRecolorOn() || !color || ADIsWebKitOwned(self)) { %orig; return; }
+    if (!ADRecolorOn() || !color || ADIsWebKitOwned(self)) {
+        %orig;
+        return;
+    }
     @try {
         UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
         if (!m) m = color;
@@ -468,7 +480,10 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 
 %hook UILabel
 - (void)setTextColor:(UIColor *)color {
-    if (!ADRecolorOn() || !color) { %orig; return; }
+    if (!ADRecolorOn() || !color) {
+        %orig;
+        return;
+    }
     @try {
         UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
         if (!m) m = color;
@@ -481,7 +496,10 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 
 %hook UITextView
 - (void)setTextColor:(UIColor *)color {
-    if (!ADRecolorOn() || !color) { %orig; return; }
+    if (!ADRecolorOn() || !color) {
+        %orig;
+        return;
+    }
     @try {
         UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
         if (!m) m = color;
@@ -494,7 +512,10 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 
 %hook UITextField
 - (void)setTextColor:(UIColor *)color {
-    if (!ADRecolorOn() || !color) { %orig; return; }
+    if (!ADRecolorOn() || !color) {
+        %orig;
+        return;
+    }
     @try {
         UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
         if (!m) m = color;
@@ -507,7 +528,10 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 
 %hook UIButton
 - (void)setTitleColor:(UIColor *)color forState:(UIControlState)state {
-    if (!ADRecolorOn() || !color) { %orig; return; }
+    if (!ADRecolorOn() || !color) {
+        %orig;
+        return;
+    }
     @try {
         UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
         if (!m) m = color;
@@ -521,9 +545,15 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 // ─── CALayer: catches React Native (Fabric sets layer colours directly) ───────────
 %hook CALayer
 - (void)setBackgroundColor:(CGColorRef)color {
-    if (!ADRecolorOn() || !color) { %orig; return; }
+    if (!ADRecolorOn() || !color) {
+        %orig;
+        return;
+    }
     @try {
-        if (ADLayerIsWebKitOwned(self)) { %orig; return; }
+        if (ADLayerIsWebKitOwned(self)) {
+            %orig;
+            return;
+        }
         CGColorRef m = ADModifyCGColor(color, ADColorRoleBackground);
         if (!m) m = color;
         %orig(m);
@@ -532,9 +562,15 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
     %orig;
 }
 - (void)setBorderColor:(CGColorRef)color {
-    if (!ADRecolorOn() || !color) { %orig; return; }
+    if (!ADRecolorOn() || !color) {
+        %orig;
+        return;
+    }
     @try {
-        if (ADLayerIsWebKitOwned(self)) { %orig; return; }
+        if (ADLayerIsWebKitOwned(self)) {
+            %orig;
+            return;
+        }
         CGColorRef m = ADModifyCGColor(color, ADColorRoleBorder);
         if (!m) m = color;
         %orig(m);
@@ -546,7 +582,10 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 
 %hook CAGradientLayer
 - (void)setColors:(NSArray *)colors {
-    if (!ADRecolorOn() || colors.count == 0) { %orig; return; }
+    if (!ADRecolorOn() || colors.count == 0) {
+        %orig;
+        return;
+    }
     @try {
         NSMutableArray *out = [NSMutableArray arrayWithCapacity:colors.count];
         for (id c in colors){
@@ -564,7 +603,10 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 // ─── system chrome that has its own switches rather than colours ───────────────────
 %hook UIVisualEffectView
 - (void)setEffect:(UIVisualEffect *)effect {
-    if (!ADRecolorOn()){ %orig; return; }
+    if (!ADRecolorOn()) {
+        %orig;
+        return;
+    }
     @try {
         if ([effect isKindOfClass:[UIBlurEffect class]]){
             %orig([UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]);
@@ -632,12 +674,24 @@ static void ADDarkenSplash(UIViewController *vc){
     @try { UIView *v = vc.view; if (v) v.backgroundColor = ADColorFromHex(gP.bgHex); } @catch(...) {}
 }
 %hook AXUSplashScreenViewController
-- (void)viewDidLayoutSubviews { %orig; ADDarkenSplash(self); }
-- (void)viewDidAppear:(BOOL)a  { %orig; ADDarkenSplash(self); }
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ADDarkenSplash(self);
+}
+- (void)viewDidAppear:(BOOL)a {
+    %orig;
+    ADDarkenSplash(self);
+}
 %end
 %hook TezBaseSplashScreenViewController
-- (void)viewDidLayoutSubviews { %orig; ADDarkenSplash(self); }
-- (void)viewDidAppear:(BOOL)a  { %orig; ADDarkenSplash(self); }
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ADDarkenSplash(self);
+}
+- (void)viewDidAppear:(BOOL)a {
+    %orig;
+    ADDarkenSplash(self);
+}
 %end
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -650,9 +704,57 @@ static void ADSweep(void){
     ADInjectAllWebViews();
     ADSweepAllWindows();
 }
+
+// ─── bounded launch-window timer ──────────────────────────────────────────────────
+// The old build swept every second for the life of the process. That meant a full
+// recursive walk of every window's view tree, on the main thread, forever — pure
+// battery burn once the app has settled, and a jank risk mid-scroll.
+//
+// It is also unnecessary. Once the hooks are installed, every NEW colour is themed
+// at assignment. Sweeping only exists to catch views built BEFORE injection (the
+// pre-warmed gateway, the splash stack), which is a launch-time problem with a
+// launch-time lifetime. So the timer now runs on a decaying cadence for ~30s and
+// then stops; anything later is covered by the hooks, the foreground observer, and
+// the prefs-changed observer below.
+static int gSweepTicks = 0;
 static void ADStartTimer(void){
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.0*NSEC_PER_SEC)),
+    if (gSweepTicks++ > 15) {           // ~30s of 2s ticks, then done
+        ADRaw("[AmazonDark] launch sweeps complete; hooks now steady-state");
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2.0*NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{ ADSweep(); ADStartTimer(); });
+}
+
+// ─── live settings reload ─────────────────────────────────────────────────────────
+// ADRootListController posts this Darwin notification on every toggle. Without an
+// observer the setting sat in the plist and did nothing until the app was killed,
+// which made the whole Settings pane look broken.
+//
+// Caveat worth knowing: web surfaces re-theme exactly, because DarkReader.enable()
+// recomputes from the untouched DOM. Native views cannot — the original colour is
+// gone once replaced, so re-running the transform over already-themed views drifts
+// slightly (it converges, it does not blow up). A relaunch gives an exact result.
+static void ADPrefsChanged(CFNotificationCenterRef center, void *observer,
+                           CFStringRef name, const void *object,
+                           CFDictionaryRef userInfo) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            ADLoadPrefs();              // also re-syncs + clears the colour cache
+            ADRaw("[AmazonDark] prefs reloaded (Darwin notification)");
+            ADForceWindowsDarkTrait();
+            ADInjectAllWebViews();      // exact re-theme on web
+            ADSweepAllWindows();        // best-effort re-theme on native
+        } @catch(...) {}
+    });
+}
+
+// Foreground: a backgrounded app can be re-laid-out by the system, and web tabs may
+// have been reclaimed. One sweep on return is far cheaper than a forever-timer.
+static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
+                              CFStringRef name, const void *object,
+                              CFDictionaryRef userInfo) {
+    dispatch_async(dispatch_get_main_queue(), ^{ @try { ADSweep(); } @catch(...) {} });
 }
 
 // ─── %ctor : Obj-C-free. Process guard + open log + %init + schedule real work. ────
@@ -680,6 +782,16 @@ static void ADStartTimer(void){
                 ADSweep();
             });
     }
+    // Live settings reload + foreground re-apply.
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL, ADPrefsChanged,
+        CFSTR("com.colindavidr.amazondark/prefs-changed"),
+        NULL, CFNotificationSuspensionBehaviorCoalesce);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(),
+        NULL, ADAppForegrounded,
+        (__bridge CFStringRef)UIApplicationWillEnterForegroundNotification,
+        NULL, CFNotificationSuspensionBehaviorCoalesce);
+
     ADStartTimer();
 }
 
