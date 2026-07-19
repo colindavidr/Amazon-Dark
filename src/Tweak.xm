@@ -364,11 +364,10 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                 // not care how the document came to exist, so this works regardless.
                 // Overlay diagnostic: name the elements veiling product images. Amazon blocks
                 // remote DOM inspection, so the page has to tell us itself. Runs once per URL.
-                {
+                if ([st containsString:@"complete"]) {
                     static NSMutableSet *ovSeen = nil;
                     if (!ovSeen) ovSeen = [NSMutableSet set];
                     if (![ovSeen containsObject:u]){
-                        [ovSeen addObject:u];
                         NSString *probe =
                           @"(function(){try{"
                            "var imgs=[].slice.call(document.querySelectorAll('img'));"
@@ -398,14 +397,23 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                                "+',bg='+bc.backgroundColor+',bgi='+bc.backgroundImage.slice(0,50)+'}');}"
                            "var htmlF=getComputedStyle(document.documentElement).filter;"
                            "var bodyF=getComputedStyle(document.body).filter;"
-                           "return 'img='+big.length+' bgEl='+bgEls.length"
+                           "var fr=document.querySelectorAll('iframe').length;"
+                           "return 'img='+big.length+' bgEl='+bgEls.length+' iframes='+fr"
                              "+' htmlFilter='+htmlF+' bodyFilter='+bodyF"
                              "+' || '+out.join(' || ');"
                            "}catch(e){return 'err:'+e;}})()";
                         [wv evaluateJavaScript:probe completionHandler:^(id r3, NSError *e3){
                             @try {
-                                if ([r3 isKindOfClass:[NSString class]])
-                                    ADLog(@"overlay@%@: %@", u, (NSString *)r3);
+                                if (![r3 isKindOfClass:[NSString class]]) return;
+                                NSString *res = (NSString *)r3;
+                                // Only remember a sample that actually found media. An
+                                // empty result means we looked too early (or the content
+                                // lives in a frame), so leave the URL un-cached and try
+                                // again on the next pass rather than caching a blind spot.
+                                BOOL useful = !([res containsString:@"img=0 bgEl=0"] ||
+                                                [res hasPrefix:@"imgs=0"]);
+                                if (useful) [ovSeen addObject:u];
+                                ADLog(@"overlay@%@: %@%@", u, res, useful ? @"" : @" [retrying]");
                             } @catch(...) {}
                         }];
                     }
@@ -1521,7 +1529,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.7.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.7.1 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
