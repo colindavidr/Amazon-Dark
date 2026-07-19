@@ -233,8 +233,24 @@ static NSString *ADBundledDarkReaderJS(void){
 // Fixes object passed as enable()'s 2nd argument. ignoreImageAnalysis:['*'] stops
 // Dark Reader hiding / inverting / solid-filling images — the home-tab product veil.
 // This is the web-side half of the project's core promise: never touch imagery.
+//
+// The css field is injected by Dark Reader as an authoritative override sheet
+// (overrideStyle.textContent in dynamic-theme/index.ts), so it wins the cascade.
+// We use it to undo the OTHER way Dark Reader can veil a photo: it runs
+// modifyGradientColor() on every CSS gradient stop (a path entirely separate from
+// image analysis), so a white→transparent scrim gradient laid over a hero image
+// gets its stops darkened into a grey/black film. The rules below force any element
+// that layers a gradient ON TOP of a background image to drop the gradient, and
+// neutralise standalone overlay layers, without touching gradients used as real
+// button or chip fills.
 static NSString *ADFixesLiteral(void){
-    return @"{css:'',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}";
+    // NSString-escaped CSS. \\n keeps it readable in the log if dumped.
+    return @"{css:'"
+            "[style*=\\\"background-image\\\"][style*=\\\"gradient\\\"][style*=\\\"url(\\\"]"
+              "{background-image:none !important;}"
+            ".a-carousel-overlay,.gradient-overlay,[class*=\\\"Overlay\\\"],[class*=\\\"overlay\\\"]"
+              "{background-image:none !important;background-color:transparent !important;}"
+            "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}";
 }
 
 static NSString *ADThemeLiteral(void){
@@ -846,6 +862,29 @@ static NSAttributedString *ADRecolorAttributedString(NSAttributedString *in){
     } @catch(...) {}
     %orig;
 }
+- (void)didMoveToWindow {
+    %orig;
+    @try {
+        // The light band behind the status bar and search field is a bar-background
+        // blur whose backdrop paints its own light tint, so forcing the effect dark
+        // in setEffect: is not always enough. Drop a dark fill behind the effect view
+        // when it is bar-sized so the top matches the themed content below it.
+        if (ADRecolorOn() && self.window && self.bounds.size.height < 160){
+            ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex);
+        }
+    } @catch(...) {}
+}
+%end
+
+// _UIBarBackground is the nav/search bar's own backing view; force it dark so the
+// top band matches the themed content below it.
+%hook _UIBarBackground
+- (void)layoutSubviews {
+    %orig;
+    @try {
+        if (gP.enabled) ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex);
+    } @catch(...) {}
+}
 %end
 
 %hook UIScrollView
@@ -1308,7 +1347,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.4.1 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.5.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
