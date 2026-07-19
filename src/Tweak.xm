@@ -361,6 +361,34 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                 // Rather than chase every creation path, repair it here: inject the
                 // full engine directly into the live document. evaluateJavaScript does
                 // not care how the document came to exist, so this works regardless.
+                // Overlay diagnostic: name the elements veiling product images. Amazon blocks
+                // remote DOM inspection, so the page has to tell us itself. Runs once per URL.
+                {
+                    static NSMutableSet *ovSeen = nil;
+                    if (!ovSeen) ovSeen = [NSMutableSet set];
+                    if (![ovSeen containsObject:u]){
+                        [ovSeen addObject:u];
+                        NSString *probe =
+                          @"(function(){try{var out=[];var imgs=document.querySelectorAll('img');"
+                           "for(var i=0;i<imgs.length&&out.length<4;i++){var im=imgs[i];"
+                           "var r=im.getBoundingClientRect();if(r.width<80||r.height<80)continue;"
+                           "var cx=r.left+r.width/2,cy=r.top+r.height/2;"
+                           "var el=document.elementFromPoint(cx,cy);"
+                           "var hops=0;while(el&&el!==im&&hops<4){var cs=getComputedStyle(el);"
+                           "if(cs.backgroundImage!=='none'||parseFloat(cs.opacity)<1||"
+                           "(cs.backgroundColor&&cs.backgroundColor.indexOf('rgba')===0)){"
+                           "out.push((el.tagName||'?')+'.'+(el.className||'').toString().slice(0,40)+"
+                           "' bg='+cs.backgroundColor+' bgImg='+cs.backgroundImage.slice(0,40)+"
+                           "' op='+cs.opacity);break;}el=el.parentElement;hops++;}}"
+                           "return out.length?out.join(' || '):'no-overlay-found';}catch(e){return 'err:'+e;}})()";
+                        [wv evaluateJavaScript:probe completionHandler:^(id r3, NSError *e3){
+                            @try {
+                                if ([r3 isKindOfClass:[NSString class]])
+                                    ADLog(@"overlay@%@: %@", u, (NSString *)r3);
+                            } @catch(...) {}
+                        }];
+                    }
+                }
                 if ([st containsString:@"noflag"] || [st hasPrefix:@"noDR"]){
                     // Once per document. Without this guard every burst tick re-injects
                     // the 346KB engine, which is wasteful and visibly disruptive.
@@ -846,6 +874,45 @@ static NSAttributedString *ADRecolorAttributedString(NSAttributedString *in){
             CGColorRef cg = (__bridge CGColorRef)c;
             CGColorRef m  = ADModifyCGColor(cg, ADColorRoleBackground);
             [out addObject:(__bridge id)(m ? m : cg)];
+        }
+        %orig(out);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3e — react-native-linear-gradient (BVLinearGradientLayer)
+// ────────────────────────────────────────────────────────────────────────────────
+// This layer is why a region can render solid white while every hook and the probe
+// swear nothing is white. It is a plain CALayer that paints its gradient in
+// drawInContext: with raw CoreGraphics — so it is NOT a CAGradientLayer (the hook
+// above never sees it), it has no backgroundColor (the probe prints NO-BG), and it
+// never calls [UIColor setFill] (pure CGGradientRef). A white→light-grey RN
+// <LinearGradient> backdrop is therefore invisible to the entire engine and renders
+// as a white sheet. Its colors property is the single choke point: transform the
+// stops with the background curve and the gradient darkens like any other surface,
+// hue preserved for genuinely colourful brand gradients.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook BVLinearGradientLayer
+- (void)setColors:(NSArray *)colors {
+    if (!ADRecolorOn() || colors.count == 0) {
+        %orig;
+        return;
+    }
+    @try {
+        NSMutableArray *out = [NSMutableArray arrayWithCapacity:colors.count];
+        for (id c in colors){
+            if ([c isKindOfClass:[UIColor class]]){
+                UIColor *m = ADModifyUIColor((UIColor *)c, ADColorRoleBackground);
+                [out addObject:(m ? m : c)];
+            } else if (c && CFGetTypeID((__bridge CFTypeRef)c) == CGColorGetTypeID()){
+                CGColorRef m = ADModifyCGColor((__bridge CGColorRef)c, ADColorRoleBackground);
+                [out addObject:(m ? (__bridge id)m : c)];
+            } else {
+                [out addObject:c];
+            }
         }
         %orig(out);
         return;
@@ -1361,7 +1428,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.5.1 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.6.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
