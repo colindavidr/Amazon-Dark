@@ -246,10 +246,7 @@ static NSString *ADBundledDarkReaderJS(void){
 static NSString *ADFixesLiteral(void){
     // NSString-escaped CSS. \\n keeps it readable in the log if dumped.
     return @"{css:'"
-            "[style*=\\\"background-image\\\"][style*=\\\"gradient\\\"][style*=\\\"url(\\\"]"
-              "{background-image:none !important;}"
-            ".a-carousel-overlay,.gradient-overlay,[class*=\\\"Overlay\\\"],[class*=\\\"overlay\\\"]"
-              "{background-image:none !important;background-color:transparent !important;}"
+            "img,picture,video,canvas,svg{filter:none !important;opacity:1 !important;}"
             "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}";
 }
 
@@ -342,11 +339,14 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
             @try {
                 NSString *st = [result isKindOfClass:[NSString class]] ? (NSString *)result
                                                                        : @"(nonstring)";
-                NSString *key = [NSString stringWithFormat:@"%@|%@", u, st];
-                static NSMutableSet *stSeen = nil;
-                if (!stSeen) stSeen = [NSMutableSet set];
-                if (![stSeen containsObject:key]){
-                    [stSeen addObject:key];
+                // Log state TRANSITIONS: remember the last state per URL and log only
+                // when it changes, so an oscillation shows as alternating lines instead
+                // of collapsing to one. This is what will confirm the flip is fixed.
+                static NSMutableDictionary *lastState = nil;
+                if (!lastState) lastState = [NSMutableDictionary dictionary];
+                NSString *prev = lastState[u];
+                if (!prev || ![prev isEqualToString:st]){
+                    lastState[u] = st;
                     ADLog(@"web state: %@ -> %@%@", u, st, err ? @" (evalError)" : @"");
                 }
 
@@ -369,18 +369,29 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                     if (![ovSeen containsObject:u]){
                         [ovSeen addObject:u];
                         NSString *probe =
-                          @"(function(){try{var out=[];var imgs=document.querySelectorAll('img');"
-                           "for(var i=0;i<imgs.length&&out.length<4;i++){var im=imgs[i];"
-                           "var r=im.getBoundingClientRect();if(r.width<80||r.height<80)continue;"
-                           "var cx=r.left+r.width/2,cy=r.top+r.height/2;"
-                           "var el=document.elementFromPoint(cx,cy);"
-                           "var hops=0;while(el&&el!==im&&hops<4){var cs=getComputedStyle(el);"
-                           "if(cs.backgroundImage!=='none'||parseFloat(cs.opacity)<1||"
-                           "(cs.backgroundColor&&cs.backgroundColor.indexOf('rgba')===0)){"
-                           "out.push((el.tagName||'?')+'.'+(el.className||'').toString().slice(0,40)+"
-                           "' bg='+cs.backgroundColor+' bgImg='+cs.backgroundImage.slice(0,40)+"
-                           "' op='+cs.opacity);break;}el=el.parentElement;hops++;}}"
-                           "return out.length?out.join(' || '):'no-overlay-found';}catch(e){return 'err:'+e;}})()";
+                          @"(function(){try{"
+                           "var imgs=[].slice.call(document.querySelectorAll('img'));"
+                           "var big=imgs.filter(function(i){var r=i.getBoundingClientRect();"
+                             "return r.width>=80&&r.height>=80;});"
+                           "if(!big.length)return 'imgs='+imgs.length+' big=0';"
+                           "var out=[];"
+                           "for(var n=0;n<big.length&&out.length<3;n++){var im=big[n];"
+                             "var cs=getComputedStyle(im);"
+                             "var r=im.getBoundingClientRect();"
+                             "var top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);"
+                             "var cover='self';"
+                             "if(top&&top!==im){var tcs=getComputedStyle(top);"
+                               "cover=(top.tagName||'?')+'.'+String(top.className||'').slice(0,24)"
+                                 "+'{bg='+tcs.backgroundColor+',bgi='+tcs.backgroundImage.slice(0,24)"
+                                 "+',op='+tcs.opacity+'}';}"
+                             "out.push('IMG{filter='+cs.filter+',op='+cs.opacity"
+                               "+',blend='+cs.mixBlendMode+',bg='+cs.backgroundColor"
+                               "+'} cover='+cover);}"
+                           "var htmlF=getComputedStyle(document.documentElement).filter;"
+                           "var bodyF=getComputedStyle(document.body).filter;"
+                           "return 'big='+big.length+' htmlFilter='+htmlF+' bodyFilter='+bodyF"
+                             "+' || '+out.join(' || ');"
+                           "}catch(e){return 'err:'+e;}})()";
                         [wv evaluateJavaScript:probe completionHandler:^(id r3, NSError *e3){
                             @try {
                                 if ([r3 isKindOfClass:[NSString class]])
@@ -390,20 +401,40 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                     }
                 }
                 if ([st containsString:@"noflag"] || [st hasPrefix:@"noDR"]){
-                    // Once per document. Without this guard every burst tick re-injects
-                    // the 346KB engine, which is wasteful and visibly disruptive.
-                    static NSMutableSet *repaired = nil;
-                    if (!repaired) repaired = [NSMutableSet set];
-                    if (![repaired containsObject:u]){
-                        [repaired addObject:u];
-                        NSString *full = ADDarkReaderBootstrap();
-                        if (full.length){
-                            ADLog(@"web repair: injecting full engine into %@", u);
-                            [wv evaluateJavaScript:full completionHandler:^(id r2, NSError *e2){
-                                if (e2) ADLog(@"web repair FAILED: %@", e2.localizedDescription);
-                            }];
-                        }
-                    }
+                    // Re-heal EVERY time the document is unthemed, not once per URL.
+                    //
+                    // The previous guard keyed on the URL, but Amazon reuses a fixed
+                    // URL per tab (/gp/cart/view.html, mshop.html) across many document
+                    // lifetimes: leave the tab, the web view is torn down, return and a
+                    // FRESH document loads at the SAME url that our user script again
+                    // missed (noflag). With a URL guard the first visit healed and every
+                    // later one was skipped — so the tab alternated dark/light with the
+                    // web-view lifecycle. That is the cart/shopping flip.
+                    //
+                    // Guard instead on the document's identity: heal once per loaded
+                    // document, but a new document at the same URL is a new identity, so
+                    // it heals again. __AMZDARK_HEALED__ is set on window (cleared with
+                    // every fresh document), so its absence means "this document has not
+                    // been healed yet" regardless of how many times the URL has appeared.
+                    NSString *heal =
+                        @"(function(){try{"
+                         "if(window.__AMZDARK_HEALED__)return 'already';"
+                         "window.__AMZDARK_HEALED__=1;return 'heal';"
+                         "}catch(e){return 'heal';}})()";
+                    [wv evaluateJavaScript:heal completionHandler:^(id r2, NSError *e2){
+                        @try {
+                            if ([r2 isKindOfClass:[NSString class]] &&
+                                [(NSString *)r2 isEqualToString:@"heal"]){
+                                NSString *full = ADDarkReaderBootstrap();
+                                if (full.length){
+                                    ADLog(@"web repair: injecting full engine into %@", u);
+                                    [wv evaluateJavaScript:full completionHandler:^(id r3, NSError *e3){
+                                        if (e3) ADLog(@"web repair FAILED: %@", e3.localizedDescription);
+                                    }];
+                                }
+                            }
+                        } @catch(...) {}
+                    }];
                 }
             } @catch(...) {}
         }];
@@ -1428,7 +1459,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.6.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.6.2 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
