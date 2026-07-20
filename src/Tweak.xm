@@ -316,15 +316,31 @@ static NSString *ADDarkReaderBootstrap(void){
              "return 0.2126*ch(+m[1])+0.7152*ch(+m[2])+0.0722*ch(+m[3]);}"
            "function bgOf(e){while(e){var l=lum(getComputedStyle(e).backgroundColor);"
              "if(l!==null)return l;e=e.parentElement;}return 0.02;}"
-           "var els=document.querySelectorAll('body *'),n=0;"
-           "for(var i=0;i<els.length&&n<400;i++){var el=els[i];var t=false;"
+           // Darkening blend modes are destructive on a dark theme: multiply/darken/
+           // color-burn all SUBTRACT light, so against a dark backdrop they crush the
+           // element toward black. That is what veiled the home tiles (fixed in v5.8.0
+           // via CSS on media elements) and it is back on the explore pane because
+           // there the blend mode sits on a CONTAINER, not the <img> - resetting the
+           // child cannot undo a parent's blending of the whole composited subtree.
+           // Neutralising by COMPUTED value catches it wherever it lives: img, div,
+           // background-image element or wrapper. Lighten/screen/overlay are left
+           // alone - they add light, which is harmless here.
+           "var BAD={'multiply':1,'darken':1,'color-burn':1};"
+           "var els=document.querySelectorAll('body *'),n=0,bfix=0;"
+           "for(var i=0;i<els.length;i++){var el=els[i];"
+             "var cs=getComputedStyle(el);"
+             "if(BAD[cs.mixBlendMode]&&bfix<800){"
+               "el.style.setProperty('mix-blend-mode','normal','important');"
+               "el.style.setProperty('isolation','auto','important');bfix++;}"
+             "if(n>=400)continue;"
+             "var t=false;"
              "for(var k=0;k<el.childNodes.length;k++){var nd=el.childNodes[k];"
                "if(nd.nodeType===3&&nd.nodeValue&&nd.nodeValue.trim()){t=true;break;}}"
              "if(!t)continue;"
-             "var fl=lum(getComputedStyle(el).color);if(fl===null)continue;"
+             "var fl=lum(cs.color);if(fl===null)continue;"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
-           "return n;}catch(e){return -1;}};"
+           "return n+'/'+bfix;}catch(e){return -1;}};"
          "window.__AMZDARK_APPLY__=function(){try{"
            "if(!document.querySelector('style.darkreader'))DarkReader.enable(%@,%@);"
            "window.__AMZDARK_FIXCONTRAST__();"
@@ -1790,7 +1806,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.12.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.12.1 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
