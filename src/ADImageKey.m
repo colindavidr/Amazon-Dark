@@ -128,3 +128,56 @@ UIImage *ADKeyWhiteBackground(UIImage *img, const char *bgHex){
     #undef MATCH
     #undef ENQUEUE
 }
+
+BOOL ADIsDarkGlyph(UIImage *img){
+    if (!img) return NO;
+    CGImageRef src = img.CGImage;
+    if (!src) return NO;
+
+    size_t W = CGImageGetWidth(src), H = CGImageGetHeight(src);
+    if (W == 0 || H == 0) return NO;
+    // Glyphs are small. A large asset is a photo or banner; leave it alone.
+    if (W > 256 || H > 256) return NO;
+
+    // Must have alpha — a fully opaque rectangle is not an icon, and recolouring it
+    // would repaint a real image.
+    CGImageAlphaInfo ai = CGImageGetAlphaInfo(src);
+    BOOL hasAlpha = (ai == kCGImageAlphaFirst || ai == kCGImageAlphaLast ||
+                     ai == kCGImageAlphaPremultipliedFirst ||
+                     ai == kCGImageAlphaPremultipliedLast);
+    if (!hasAlpha) return NO;
+
+    size_t bpr = W * 4;
+    uint8_t *buf = (uint8_t *)calloc(H, bpr);
+    if (!buf) return NO;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(buf, W, H, 8, bpr, cs,
+                        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx){ free(buf); return NO; }
+    CGContextDrawImage(ctx, CGRectMake(0,0,W,H), src);
+
+    double sumL = 0, sumChroma = 0;
+    long n = 0;
+    size_t stepX = (W > 32) ? W/32 : 1;
+    size_t stepY = (H > 32) ? H/32 : 1;
+    for (size_t y = 0; y < H; y += stepY){
+        for (size_t x = 0; x < W; x += stepX){
+            uint8_t *p = buf + y*bpr + x*4;
+            if (p[3] < 128) continue;                  // ignore transparent areas
+            int r = p[0], g = p[1], b = p[2];
+            int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+            int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+            sumL += (0.2126*r + 0.7152*g + 0.0722*b) / 255.0;
+            sumChroma += (mx - mn) / 255.0;
+            n++;
+        }
+    }
+    CGContextRelease(ctx);
+    free(buf);
+    if (n < 8) return NO;                              // essentially empty
+
+    double meanL = sumL / n, meanC = sumChroma / n;
+    // Dark and near-neutral => a monochrome glyph that will vanish on a dark surface.
+    return (meanL < 0.38 && meanC < 0.20);
+}

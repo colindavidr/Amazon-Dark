@@ -44,3 +44,10 @@ UIImage *ADKeyWhiteBackground(UIImage *img, const char *bgHex);
 #ifdef __cplusplus
 }
 #endif
+
+/// YES if `img` looks like a dark monochrome GLYPH (an icon), not a photograph:
+/// small, has an alpha channel, and its opaque pixels are predominantly dark and
+/// close to neutral. Such icons are invisible once the surface behind them goes
+/// dark, and unlike photos they can be safely recoloured by switching them to
+/// template rendering — which preserves the shape exactly and only changes the tint.
+BOOL ADIsDarkGlyph(UIImage *img);

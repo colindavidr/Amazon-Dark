@@ -302,10 +302,38 @@ static NSString *ADDarkReaderBootstrap(void){
          "if(window.__AMZDARK_LOADED__)return;window.__AMZDARK_LOADED__=1;%@\n" // DarkReader UMD
          "if(window.DarkReader&&DarkReader.enable){"
          "try{DarkReader.setFetchMethod(window.fetch);}catch(e){}"
+         // WCAG contrast repair. Dark Reader recolours from the page's own palette,
+         // which can leave text only marginally separated from its background - the
+         // '% off' badges and the descriptions under product photos being the
+         // reported cases. This measures the real computed contrast of every element
+         // that owns visible text and lifts ONLY the ones that actually fail, so
+         // brand colours that already read fine are untouched.
+         "window.__AMZDARK_FIXCONTRAST__=function(){try{"
+           "var FG='%@';"
+           "function ch(v){v=v/255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);}"
+           "function lum(c){var m=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)/.exec(c);"
+             "if(!m)return null;var a=m[4]===undefined?1:parseFloat(m[4]);if(a<0.1)return null;"
+             "return 0.2126*ch(+m[1])+0.7152*ch(+m[2])+0.0722*ch(+m[3]);}"
+           "function bgOf(e){while(e){var l=lum(getComputedStyle(e).backgroundColor);"
+             "if(l!==null)return l;e=e.parentElement;}return 0.02;}"
+           "var els=document.querySelectorAll('body *'),n=0;"
+           "for(var i=0;i<els.length&&n<400;i++){var el=els[i];var t=false;"
+             "for(var k=0;k<el.childNodes.length;k++){var nd=el.childNodes[k];"
+               "if(nd.nodeType===3&&nd.nodeValue&&nd.nodeValue.trim()){t=true;break;}}"
+             "if(!t)continue;"
+             "var fl=lum(getComputedStyle(el).color);if(fl===null)continue;"
+             "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
+             "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
+           "return n;}catch(e){return -1;}};"
          "window.__AMZDARK_APPLY__=function(){try{"
-           "if(document.querySelector('style.darkreader'))return;"   // themed: no-op
-           "DarkReader.enable(%@,%@);"
+           "if(!document.querySelector('style.darkreader'))DarkReader.enable(%@,%@);"
+           "window.__AMZDARK_FIXCONTRAST__();"
          "}catch(e){}};"
+         // Re-run the repair as the page fills in (carousels, lazy tiles), debounced
+         // so a busy DOM cannot turn this into a hot loop.
+         "try{var _t=null;new MutationObserver(function(){clearTimeout(_t);"
+           "_t=setTimeout(function(){try{window.__AMZDARK_FIXCONTRAST__();}catch(e){}},400);})"
+           ".observe(document.documentElement,{childList:true,subtree:true});}catch(e){}"
          "window.__AMZDARK_APPLY__();"
          // Re-apply when the page is restored from the back-forward cache (returning
          // to a tab). pageshow.persisted is true exactly in that case, and it is the
@@ -314,7 +342,7 @@ static NSString *ADDarkReaderBootstrap(void){
          "try{window.addEventListener('pageshow',function(e){if(e.persisted)window.__AMZDARK_APPLY__();});}catch(e){}"
          "try{document.addEventListener('visibilitychange',function(){if(!document.hidden)window.__AMZDARK_APPLY__();});}catch(e){}"
          "}}catch(e){}})();",
-        dr, ADThemeLiteral(), ADFixesLiteral()];
+        dr, [NSString stringWithUTF8String:gP.fgHex], ADThemeLiteral(), ADFixesLiteral()];
 }
 
 // LIGHT: re-apply the theme. MUST be a no-op when the page is already themed.
@@ -1424,6 +1452,27 @@ static void ADRunProbe(void){
             }
         }
 
+        // (1b) DARK GLYPH ICONS — the location pin, magnifier, camera and friends.
+        // These are black artwork baked into an image, so no colour hook can reach
+        // them and they vanish once the surface behind them goes dark. Unlike a
+        // photograph, an icon can be recoloured losslessly: switching it to template
+        // rendering keeps the shape and alpha exactly and lets tintColor decide the
+        // colour. We only do this when the image really looks like a monochrome dark
+        // glyph (small, alpha, dark, near-neutral), so photos are never affected.
+        if (gP.imageBackdrop){
+            UIImage *img = self.image;
+            if (img && !ADIsModifiedImage(img) &&
+                img.renderingMode != UIImageRenderingModeAlwaysTemplate &&
+                ADIsDarkGlyph(img)){
+                UIImage *tpl = [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+                if (tpl){
+                    ADMarkModifiedImage(tpl);
+                    self.image = tpl;
+                    ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+                }
+            }
+        }
+
         // (2) Corner-key white-studio backdrops in OPAQUE photos — pixel work, opt-in.
         // Off by default: it edits pixels, which everything else here avoids, and a
         // wrong key looks worse than a white card. Runs on a background queue and
@@ -1741,7 +1790,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.11.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.12.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {

@@ -5,6 +5,6 @@
     CFBundleInfoDictionaryVersion = "6.0";
     CFBundleName = AmazonDark;
     CFBundlePackageType = BNDL;
-    CFBundleVersion = "5.11.0";
+    CFBundleVersion = "5.12.0";
     NSPrincipalClass = ADRootListController;
 }
