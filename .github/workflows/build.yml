@@ -34,7 +34,7 @@ jobs:
       - name: Set up Theos
         uses: Randomblock1/theos-action@v1
 
-      - name: Lint Logos %orig usage
+      - name: Lint Logos %orig usage + header linkage
         run: bash scripts/lint-logos.sh
 
       - name: Build rootless package

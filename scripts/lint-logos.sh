@@ -62,21 +62,54 @@ for f in "${files[@]}"; do
     )
 done
 
+
+# ── header linkage guard ──────────────────────────────────────────────────────
+# Tweak.xm compiles as Objective-C++ while the helper .m files compile as plain
+# Objective-C. A declaration that sits OUTSIDE a header's extern "C" block is
+# therefore mangled by the C++ side and unmangled by the C side, producing an
+# undefined symbol at LINK time. clang -fsyntax-only never links, so this class of
+# break passes every syntax check and only fails in CI. Catch it here instead.
+for h in src/*.h; do
+    [ -f "$h" ] || continue
+    grep -q 'extern "C"' "$h" || continue
+    # find function declarations that appear after the LAST closing brace of the
+    # extern "C" block
+    close_line=$(grep -n '^}' "$h" | tail -1 | cut -d: -f1)
+    [ -z "$close_line" ] && continue
+    stray=$(tail -n "+$((close_line+1))" "$h" | grep -nE '^[A-Za-z_].*\(.*\);' || true)
+    if [ -n "$stray" ]; then
+        echo "  $h: declaration(s) outside the extern \"C\" block —"
+        echo "$stray" | sed 's/^/      /'
+        echo "      These will link-fail from Objective-C++. Move them inside the block."
+        fail=1
+    fi
+done
+
 if [ "$fail" -ne 0 ]; then
     cat <<'EOF'
 
-lint-logos: FAILED — Logos will silently delete the trailing code above.
+lint-logos: FAILED — see the specific problems listed above.
 
-Fix by putting %orig on its own line:
+  * "code follows %orig on the same line"
+      Logos silently DELETES that trailing code and still exits 0. Put %orig on
+      its own line:
+          - (void)viewDidAppear:(BOOL)a {
+              %orig;
+              ADDarkenSplash(self);
+          }
 
-    - (void)viewDidAppear:(BOOL)a {
-        %orig;
-        ADDarkenSplash(self);
-    }
+  * "%orig has a nested call in its arguments"
+      Resolve it to a local first, then pass the local to %orig.
+
+  * "declaration(s) outside the extern \"C\" block"
+      Tweak.xm builds as Objective-C++ and the helper .m files build as plain
+      Objective-C, so a declaration outside the block is name-mangled on one side
+      only and fails at LINK time — which no -fsyntax-only check can catch. Move
+      the declaration inside the extern "C" block.
 
 EOF
     exit 1
 fi
 
-echo "lint-logos: OK — %orig is always last on its line"
+echo "lint-logos: OK"
 exit 0
