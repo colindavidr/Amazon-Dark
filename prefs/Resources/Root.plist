@@ -8,6 +8,7 @@
         { cell = PSSwitchCell; label = "Dark Reader in web views"; key = "webDarkReader"; default = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
         { cell = PSSwitchCell; label = "Force Amazon native dark theme"; key = "nativeTheme"; default = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
         { cell = PSSwitchCell; label = "Recolor native content"; key = "nativeRecolor"; default = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+        { cell = PSSwitchCell; label = "Dark backdrop behind images"; key = "imageBackdrop"; default = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
 
         { cell = PSGroupCell; label = "Theme"; footerText = "Applies to web and native surfaces alike — both run the same Dark Reader color algorithm. 100 = neutral."; },
         { cell = PSSliderCell; key = "brightness"; default = 100; min = 50; max = 150; showValue = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },

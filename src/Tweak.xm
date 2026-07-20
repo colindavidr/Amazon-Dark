@@ -132,6 +132,7 @@ typedef struct {
     BOOL  enabled;            // master on/off
     BOOL  webDarkReader;      // use Dark Reader in web views
     BOOL  nativeTheme;        // force Amazon's native dark theme (weblab)
+    BOOL  imageBackdrop;      // dark panel behind images (helps transparent ones)
     BOOL  nativeRecolor;      // Dark Reader colour engine over native (non-web) content
     long  brightness;         // Dark Reader 0..100+ (default 100)
     long  contrast;           // Dark Reader 0..100+ (default 100)
@@ -161,6 +162,7 @@ static void ADPrefHex(NSDictionary *d, NSString *k, const char *def, char *out){
 static void ADLoadPrefs(void){
     // Defaults: everything a "true dark mode" wants, image inversion OFF.
     gP.enabled = YES; gP.webDarkReader = YES; gP.nativeTheme = YES;
+    gP.imageBackdrop = YES;
     gP.nativeRecolor = YES;
     gP.brightness = 100; gP.contrast = 100; gP.sepia = 0; gP.grayscale = 0;
     strcpy(gP.bgHex, "#181a1b"); strcpy(gP.fgHex, "#e8e6e3");
@@ -175,6 +177,7 @@ static void ADLoadPrefs(void){
         gP.enabled            = ADPrefBool(d, @"enabled",            gP.enabled);
         gP.webDarkReader      = ADPrefBool(d, @"webDarkReader",      gP.webDarkReader);
         gP.nativeTheme        = ADPrefBool(d, @"nativeTheme",        gP.nativeTheme);
+        gP.imageBackdrop      = ADPrefBool(d, @"imageBackdrop",      gP.imageBackdrop);
         gP.nativeRecolor      = ADPrefBool(d, @"nativeRecolor",      gP.nativeRecolor);
         gP.brightness         = ADPrefLong(d, @"brightness",         gP.brightness);
         gP.contrast           = ADPrefLong(d, @"contrast",           gP.contrast);
@@ -254,12 +257,22 @@ static NSString *ADBundledDarkReaderJS(void){
 // neutralise standalone overlay layers, without touching gradients used as real
 // button or chip fills.
 static NSString *ADFixesLiteral(void){
-    // NSString-escaped CSS. \\n keeps it readable in the log if dumped.
-    return @"{css:'"
-            "img,picture,video,canvas,svg{filter:none !important;opacity:1 !important;"
-            "mix-blend-mode:normal !important;isolation:auto !important;}"
-            "[style*=\"background-image\"]{filter:none !important;}"
-            "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}";
+    // The image backdrop is only meaningful where an image has TRANSPARENT pixels:
+    // a dark panel behind an opaque JPEG is completely hidden by the photo. So this
+    // helps transparent PNGs (icons, cut-out product shots) and is a harmless no-op
+    // everywhere else. It cannot darken white that is baked into a JPEG's pixels -
+    // that needs real pixel work, which is a separate decision.
+    NSString *imgBackdrop = gP.imageBackdrop
+        ? [NSString stringWithFormat:@"img{background-color:%s !important;}", gP.bgHex]
+        : @"";
+    return [NSString stringWithFormat:
+            @"{css:'"
+             "img,picture,video,canvas,svg{filter:none !important;opacity:1 !important;"
+             "mix-blend-mode:normal !important;isolation:auto !important;}"
+             "%@"
+             "[style*=\\\"background-image\\\"]{filter:none !important;}"
+             "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}",
+            imgBackdrop];
 }
 
 static NSString *ADThemeLiteral(void){
@@ -408,8 +421,13 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                                "+',bg='+bc.backgroundColor+',bgi='+bc.backgroundImage.slice(0,50)+'}');}"
                            "var htmlF=getComputedStyle(document.documentElement).filter;"
                            "var bodyF=getComputedStyle(document.body).filter;"
+                           "var png=0,jpg=0,other=0;"
+                           "for(var q=0;q<big.length;q++){var u2=(big[q].currentSrc||big[q].src||'');"
+                             "if(/\\.png(\\?|$)/i.test(u2))png++;"
+                             "else if(/\\.jpe?g(\\?|$)/i.test(u2))jpg++;else other++;}"
                            "var fr=document.querySelectorAll('iframe').length;"
-                           "return 'img='+big.length+' bgEl='+bgEls.length+' iframes='+fr"
+                           "return 'img='+big.length+' png='+png+' jpg='+jpg+' other='+other"
+                             "+' bgEl='+bgEls.length+' iframes='+fr"
                              "+' htmlFilter='+htmlF+' bodyFilter='+bodyF"
                              "+' || '+out.join(' || ');"
                            "}catch(e){return 'err:'+e;}})()";
@@ -1349,6 +1367,41 @@ static void ADRunProbe(void){
 }
 %end
 
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 5 — image backdrops (native half of the same idea as the web CSS above).
+// ────────────────────────────────────────────────────────────────────────────────
+// Setting a dark backgroundColor on an image view shows through wherever the image
+// has TRANSPARENT pixels — cut-out product shots, icons, logos with alpha. It is
+// completely hidden behind an opaque JPEG, so it is a no-op on ordinary photos
+// rather than a risk to them.
+//
+// What this deliberately does NOT do: touch layer.contents or any pixel of the
+// image. White baked into a JPEG stays exactly as photographed. That limitation is
+// the whole reason images have survived this project intact, and it is not worth
+// trading away for this.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook UIImageView
+- (void)didMoveToWindow {
+    %orig;
+    @try {
+        if (!gP.enabled || !gP.imageBackdrop || !self.window) return;
+        if (ADIsWebKitOwned(self)) return;
+        // Only where the image can actually be see-through; otherwise leave it alone.
+        UIImage *img = self.image;
+        if (!img) return;
+        CGImageRef cg = img.CGImage;
+        if (!cg) return;
+        CGImageAlphaInfo a = CGImageGetAlphaInfo(cg);
+        BOOL hasAlpha = (a == kCGImageAlphaFirst || a == kCGImageAlphaLast ||
+                         a == kCGImageAlphaPremultipliedFirst ||
+                         a == kCGImageAlphaPremultipliedLast);
+        if (!hasAlpha) return;                       // opaque: a backdrop is invisible
+        if (self.backgroundColor) return;            // respect an explicit choice
+        ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex);
+    } @catch(...) {}
+}
+%end
+
 // ─── catch-up sweep ───────────────────────────────────────────────────────────────
 // Views built before our hooks installed (the pre-warmed gateway, the splash stack)
 // already hold light colours. Re-assigning a view's own colour runs it through the
@@ -1540,7 +1593,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.8.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.9.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
