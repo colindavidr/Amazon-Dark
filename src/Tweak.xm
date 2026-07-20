@@ -67,6 +67,7 @@
 #import <fcntl.h>
 #import <dlfcn.h>
 #import "ADColor.h"
+#import "ADImageKey.h"
 
 extern char *__progname;
 
@@ -132,6 +133,7 @@ typedef struct {
     BOOL  enabled;            // master on/off
     BOOL  webDarkReader;      // use Dark Reader in web views
     BOOL  nativeTheme;        // force Amazon's native dark theme (weblab)
+    BOOL  imageKeyBackground; // corner-key white studio backdrops in photos (opt-in)
     BOOL  imageBackdrop;      // dark panel behind images (helps transparent ones)
     BOOL  nativeRecolor;      // Dark Reader colour engine over native (non-web) content
     long  brightness;         // Dark Reader 0..100+ (default 100)
@@ -144,6 +146,9 @@ typedef struct {
 
 static ADPrefs gP;
 static void ADSyncColorEngine(void);
+static const void *kADModImageKey = &kADModImageKey;
+static inline BOOL ADIsModifiedImage(UIImage *im){ return im && objc_getAssociatedObject(im, kADModImageKey) != nil; }
+static inline void ADMarkModifiedImage(UIImage *im){ if (im) objc_setAssociatedObject(im, kADModImageKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
 static UIColor *ADColorFromHex(const char *hex);
 static void ADRunProbe(void);
 
@@ -163,6 +168,7 @@ static void ADLoadPrefs(void){
     // Defaults: everything a "true dark mode" wants, image inversion OFF.
     gP.enabled = YES; gP.webDarkReader = YES; gP.nativeTheme = YES;
     gP.imageBackdrop = YES;
+    gP.imageKeyBackground = NO;
     gP.nativeRecolor = YES;
     gP.brightness = 100; gP.contrast = 100; gP.sepia = 0; gP.grayscale = 0;
     strcpy(gP.bgHex, "#181a1b"); strcpy(gP.fgHex, "#e8e6e3");
@@ -178,6 +184,7 @@ static void ADLoadPrefs(void){
         gP.webDarkReader      = ADPrefBool(d, @"webDarkReader",      gP.webDarkReader);
         gP.nativeTheme        = ADPrefBool(d, @"nativeTheme",        gP.nativeTheme);
         gP.imageBackdrop      = ADPrefBool(d, @"imageBackdrop",      gP.imageBackdrop);
+        gP.imageKeyBackground = ADPrefBool(d, @"imageKeyBackground", gP.imageKeyBackground);
         gP.nativeRecolor      = ADPrefBool(d, @"nativeRecolor",      gP.nativeRecolor);
         gP.brightness         = ADPrefLong(d, @"brightness",         gP.brightness);
         gP.contrast           = ADPrefLong(d, @"contrast",           gP.contrast);
@@ -1105,22 +1112,40 @@ static NSAttributedString *ADRecolorAttributedString(NSAttributedString *in){
 // layoutSubviews (which re-runs on every relayout) makes it stick. Image-safe: only
 // the container's own backgroundColor is touched, never any glyph/icon subview.
 // ════════════════════════════════════════════════════════════════════════════════
+// The tab-bar strip. Force the container dark, but NEVER recurse into its item/icon
+// subviews — those are template-tinted glyphs, and repainting their backgrounds (or
+// the fill landing mid-transition) is what made tabs intermittently vanish. We set
+// the fill only when it is not already our colour, so a fast relayout does not keep
+// re-triggering it.
+static void ADForceBarDark(UIView *bar){
+    if (!gP.enabled || !bar) return;
+    @try {
+        UIColor *want = ADColorFromHex(gP.bgHex);
+        UIColor *have = bar.backgroundColor;
+        CGFloat r1,g1,b1,a1,r2,g2,b2,a2;
+        BOOL same = have &&
+            [have getRed:&r1 green:&g1 blue:&b1 alpha:&a1] &&
+            [want getRed:&r2 green:&g2 blue:&b2 alpha:&a2] &&
+            fabs(r1-r2)<0.01 && fabs(g1-g2)<0.01 && fabs(b1-b2)<0.01 && fabs(a1-a2)<0.01;
+        if (!same) bar.backgroundColor = want;
+    } @catch(...) {}
+}
 %hook CXIStoreModesBottomNavToolbar
 - (void)layoutSubviews {
     %orig;
-    @try { if (gP.enabled) ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex); } @catch(...) {}
+    ADForceBarDark((UIView *)self);
 }
 %end
 %hook CXIStoreModesTabBarView
 - (void)layoutSubviews {
     %orig;
-    @try { if (gP.enabled) ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex); } @catch(...) {}
+    ADForceBarDark((UIView *)self);
 }
 %end
 %hook ANPRetailTabBar
 - (void)layoutSubviews {
     %orig;
-    @try { if (gP.enabled) ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex); } @catch(...) {}
+    ADForceBarDark((UIView *)self);
 }
 %end
 
@@ -1384,21 +1409,137 @@ static void ADRunProbe(void){
 - (void)didMoveToWindow {
     %orig;
     @try {
-        if (!gP.enabled || !gP.imageBackdrop || !self.window) return;
-        if (ADIsWebKitOwned(self)) return;
-        // Only where the image can actually be see-through; otherwise leave it alone.
-        UIImage *img = self.image;
-        if (!img) return;
-        CGImageRef cg = img.CGImage;
-        if (!cg) return;
-        CGImageAlphaInfo a = CGImageGetAlphaInfo(cg);
-        BOOL hasAlpha = (a == kCGImageAlphaFirst || a == kCGImageAlphaLast ||
-                         a == kCGImageAlphaPremultipliedFirst ||
-                         a == kCGImageAlphaPremultipliedLast);
-        if (!hasAlpha) return;                       // opaque: a backdrop is invisible
-        if (self.backgroundColor) return;            // respect an explicit choice
-        ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex);
+        if (!gP.enabled || !self.window || ADIsWebKitOwned(self)) return;
+
+        // (1) Backdrop for TRANSPARENT images — cheap, always-on-when-enabled.
+        if (gP.imageBackdrop){
+            UIImage *img = self.image;
+            if (img && img.CGImage){
+                CGImageAlphaInfo a = CGImageGetAlphaInfo(img.CGImage);
+                BOOL hasAlpha = (a == kCGImageAlphaFirst || a == kCGImageAlphaLast ||
+                                 a == kCGImageAlphaPremultipliedFirst ||
+                                 a == kCGImageAlphaPremultipliedLast);
+                if (hasAlpha && !self.backgroundColor)
+                    ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex);
+            }
+        }
+
+        // (2) Corner-key white-studio backdrops in OPAQUE photos — pixel work, opt-in.
+        // Off by default: it edits pixels, which everything else here avoids, and a
+        // wrong key looks worse than a white card. Runs on a background queue and
+        // caches per source image so each is processed at most once; if the key
+        // declines (ambiguous / not white-studio) the original is kept untouched.
+        if (gP.imageKeyBackground){
+            UIImage *img = self.image;
+            if (img && img.CGImage && !ADIsModifiedImage(img)){
+                static const void *kKeyed = &kKeyed;
+                if (!objc_getAssociatedObject(img, kKeyed)){
+                    objc_setAssociatedObject(img, kKeyed, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    __weak UIImageView *weakSelf = self;
+                    NSString *hexStr = [NSString stringWithUTF8String:gP.bgHex];
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        @try {
+                            UIImage *keyed = ADKeyWhiteBackground(img, hexStr.UTF8String);
+                            if (!keyed) return;
+                            ADMarkModifiedImage(keyed);
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                @try {
+                                    UIImageView *sv = weakSelf;
+                                    if (sv && sv.image == img) sv.image = keyed;   // still the same image
+                                } @catch(...) {}
+                            });
+                        } @catch(...) {}
+                    });
+                }
+            }
+        }
     } @catch(...) {}
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3f — DIRECTLY-DRAWN TEXT (NSString / NSAttributedString draw APIs)
+// ────────────────────────────────────────────────────────────────────────────────
+// The gap left by making the drawRect: paint path one-way in v5.3.1. That change
+// (light fills darken, dark fills untouched) was needed to stop an already-dark
+// backdrop being flipped light — but it means dark text painted through
+// [UIColor set] + drawInRect: is now left dark on a dark background, i.e. invisible.
+//
+// The fix is to intercept where the colour is UNAMBIGUOUSLY text rather than trying
+// to guess intent from a bare fill colour. In these APIs the foreground attribute is
+// text by definition, so pushing it through the foreground curve carries none of the
+// risk that made the generic paint hook one-way: we can never lighten a background
+// here, because a background is never drawn by drawInRect:withAttributes:.
+// ════════════════════════════════════════════════════════════════════════════════
+
+// Return a copy of `attrs` whose foreground colour has been run through the
+// foreground curve. Text with no explicit colour defaults to black, which on a dark
+// surface is the worst case, so that is lifted too.
+static NSDictionary *ADRecolorTextAttrs(NSDictionary *attrs){
+    if (!ADRecolorOn()) return attrs;
+    @try {
+        UIColor *fg = attrs[NSForegroundColorAttributeName];
+        if (fg && ADIsModifiedUIColor(fg)) return attrs;          // already ours
+        UIColor *src = [fg isKindOfClass:[UIColor class]] ? fg : [UIColor blackColor];
+        UIColor *mod = ADModifyUIColor(src, ADColorRoleForeground);
+        if (!mod) return attrs;
+        NSMutableDictionary *m = attrs ? [attrs mutableCopy] : [NSMutableDictionary dictionary];
+        m[NSForegroundColorAttributeName] = mod;
+        return m;
+    } @catch(...) {}
+    return attrs;
+}
+
+%hook NSString
+- (void)drawAtPoint:(CGPoint)point withAttributes:(NSDictionary *)attrs {
+    @try {
+        NSDictionary *a = ADRecolorTextAttrs(attrs);
+        %orig(point, a);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+- (void)drawInRect:(CGRect)rect withAttributes:(NSDictionary *)attrs {
+    @try {
+        NSDictionary *a = ADRecolorTextAttrs(attrs);
+        %orig(rect, a);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+- (void)drawWithRect:(CGRect)rect
+             options:(NSStringDrawingOptions)options
+          attributes:(NSDictionary *)attrs
+             context:(NSStringDrawingContext *)context {
+    @try {
+        NSDictionary *a = ADRecolorTextAttrs(attrs);
+        %orig(rect, options, a, context);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook NSAttributedString
+- (void)drawAtPoint:(CGPoint)point {
+    @try {
+        NSAttributedString *r = ADRecolorAttributedString(self);
+        if (r != self) {
+            [r drawAtPoint:point];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+- (void)drawInRect:(CGRect)rect {
+    @try {
+        NSAttributedString *r = ADRecolorAttributedString(self);
+        if (r != self) {
+            [r drawInRect:rect];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
 }
 %end
 
@@ -1407,10 +1548,17 @@ static void ADRunProbe(void){
 // already hold light colours. Re-assigning a view's own colour runs it through the
 // hook once; ADModifyUIColor recognises anything it previously emitted, so a view
 // that is swept twice is not darkened twice.
+static BOOL ADIsTabBarItemish(UIView *v){
+    const char *n = object_getClassName(v);
+    if (!n) return NO;
+    return (strstr(n,"BottomNav") || strstr(n,"TabBarItem") ||
+            strstr(n,"TabBar") || strstr(n,"NavToolbar"));
+}
 static void ADSweepViewTree(UIView *v, int depth){
     if (!v || depth > 60) return;
     @try {
         if (ADIsWebKitOwned(v)) return;                 // Dark Reader's territory
+        if (ADIsTabBarItemish(v)) return;               // tab bar owns its own colour; icons must survive
         UIColor *bg = v.backgroundColor;
         if (bg && !ADIsModifiedUIColor(bg)) {
             // Assign the TRANSFORMED colour, never the same object back.
@@ -1593,7 +1741,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.9.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.11.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {

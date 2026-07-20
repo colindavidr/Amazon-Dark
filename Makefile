@@ -5,7 +5,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = AmazonDark
 
-AmazonDark_FILES   = src/Tweak.xm src/ADColor.m
+AmazonDark_FILES   = src/Tweak.xm src/ADColor.m src/ADImageKey.m
 AmazonDark_CFLAGS  = -fobjc-arc -fexceptions
 AmazonDark_CFLAGS += -Wno-unused-variable -Wno-unused-function
 AmazonDark_CFLAGS += -Wno-deprecated-declarations -Wno-error

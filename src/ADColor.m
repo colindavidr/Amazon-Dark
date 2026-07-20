@@ -252,6 +252,27 @@ void ADModifyRGB(ADColorRole role,
     double rr, gg, bb;
     ADHSLToRGB(mod, &rr, &gg, &bb);
     ADApplyMatrix(&rr, &gg, &bb);
+
+    // CONTRAST FLOOR (foreground only).
+    // The HSL curves preserve hue and saturation, which is what keeps brand colours
+    // recognisable — but a very dark or heavily saturated source can still land close
+    // to the background pole, and text that cannot be read is a worse failure than a
+    // slightly shifted hue. If a foreground colour ends up under a minimum separation
+    // from the background, lift its lightness until it clears, keeping hue/saturation.
+    //
+    // This also backstops the drawRect: paint path being deliberately one-way: any
+    // text colour that reaches the engine is guaranteed readable on the theme.
+    if (role == ADColorRoleForeground) {
+        double bgLum = (0.2126*ADTheme.bgR + 0.7152*ADTheme.bgG + 0.0722*ADTheme.bgB) / 255.0;
+        double fgLum = 0.2126*rr + 0.7152*gg + 0.0722*bb;
+        const double kMinSep = 0.38;
+        if (fabs(fgLum - bgLum) < kMinSep) {
+            ADHSL h = ADRGBToHSL(rr, gg, bb);
+            h.l = ADClamp((bgLum < 0.5) ? (bgLum + kMinSep) : (bgLum - kMinSep), 0.0, 1.0);
+            ADHSLToRGB(h, &rr, &gg, &bb);
+        }
+    }
+
     *outR = (CGFloat)rr; *outG = (CGFloat)gg; *outB = (CGFloat)bb;
 }
 
