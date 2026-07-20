@@ -150,6 +150,7 @@ static const void *kADModImageKey = &kADModImageKey;
 static inline BOOL ADIsModifiedImage(UIImage *im){ return im && objc_getAssociatedObject(im, kADModImageKey) != nil; }
 static inline void ADMarkModifiedImage(UIImage *im){ if (im) objc_setAssociatedObject(im, kADModImageKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
 static UIColor *ADColorFromHex(const char *hex);
+static UIImage *ADGlyphify(UIImage *img);
 static void ADRunProbe(void);
 
 static long ADPrefLong(NSDictionary *d, NSString *k, long def){
@@ -1468,24 +1469,13 @@ static void ADRunProbe(void){
             }
         }
 
-        // (1b) DARK GLYPH ICONS — the location pin, magnifier, camera and friends.
-        // These are black artwork baked into an image, so no colour hook can reach
-        // them and they vanish once the surface behind them goes dark. Unlike a
-        // photograph, an icon can be recoloured losslessly: switching it to template
-        // rendering keeps the shape and alpha exactly and lets tintColor decide the
-        // colour. We only do this when the image really looks like a monochrome dark
-        // glyph (small, alpha, dark, near-neutral), so photos are never affected.
-        if (gP.imageBackdrop){
-            UIImage *img = self.image;
-            if (img && !ADIsModifiedImage(img) &&
-                img.renderingMode != UIImageRenderingModeAlwaysTemplate &&
-                ADIsDarkGlyph(img)){
-                UIImage *tpl = [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-                if (tpl){
-                    ADMarkModifiedImage(tpl);
-                    self.image = tpl;
-                    ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
-                }
+        // (1b) Catch-up for glyphs assigned BEFORE our hooks were installed. New
+        // assignments are handled earlier and more reliably by the setImage: hook.
+        {
+            UIImage *tpl = ADGlyphify(self.image);
+            if (tpl){
+                ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+                self.image = tpl;
             }
         }
 
@@ -1601,6 +1591,81 @@ static NSDictionary *ADRecolorTextAttrs(NSDictionary *attrs){
         NSAttributedString *r = ADRecolorAttributedString(self);
         if (r != self) {
             [r drawInRect:rect];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 5b — GLYPH CONVERSION AT ASSIGNMENT TIME
+// ────────────────────────────────────────────────────────────────────────────────
+// Converting glyphs only in didMoveToWindow was too late and too narrow. Any icon
+// whose image is set AFTER the view is already on screen never got converted — the
+// search magnifier once the search UI opens, the filters icon after a search, the
+// recent-searches glyph, the heart on a product cell. It also caused the location
+// pin to flash black: the original dark artwork was displayed first and only
+// repainted when the view moved into the window.
+//
+// Intercepting setImage: fixes both at once. The conversion happens before the
+// image is ever handed to the view, so a late assignment is caught and there is no
+// intermediate frame showing the dark original.
+//
+// Results are cached per UIImage (checked-and-not-a-glyph is remembered too), so a
+// given image is analysed at most once no matter how often it is re-assigned during
+// scrolling.
+static const void *kADGlyphChecked = &kADGlyphChecked;
+
+static UIImage *ADGlyphify(UIImage *img){
+    if (!gP.enabled || !gP.imageBackdrop || !img) return nil;
+    @try {
+        if (ADIsModifiedImage(img)) return nil;                        // already ours
+        if (objc_getAssociatedObject(img, kADGlyphChecked)) return nil; // known non-glyph
+        if (img.renderingMode == UIImageRenderingModeAlwaysTemplate) return nil;
+        if (!ADIsDarkGlyph(img)){
+            objc_setAssociatedObject(img, kADGlyphChecked, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return nil;
+        }
+        UIImage *tpl = [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        if (!tpl) return nil;
+        ADMarkModifiedImage(tpl);
+        return tpl;
+    } @catch(...) {}
+    return nil;
+}
+
+%hook UIImageView
+- (void)setImage:(UIImage *)image {
+    if (!image || ADIsWebKitOwned(self)) {
+        %orig;
+        return;
+    }
+    @try {
+        UIImage *tpl = ADGlyphify(image);
+        if (tpl) {
+            ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+            %orig(tpl);
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// Many of these glyphs are button artwork rather than plain image views — the heart,
+// the filters control, the recent-search rows.
+%hook UIButton
+- (void)setImage:(UIImage *)image forState:(UIControlState)state {
+    if (!image) {
+        %orig;
+        return;
+    }
+    @try {
+        UIImage *tpl = ADGlyphify(image);
+        if (tpl) {
+            ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+            %orig(tpl, state);
             return;
         }
     } @catch(...) {}
@@ -1806,7 +1871,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.12.2 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.13.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
