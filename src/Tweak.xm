@@ -230,6 +230,16 @@ static NSString *ADBundledDarkReaderJS(void){
 
 // The theme literal, built from live prefs (shared by both the heavy bootstrap and
 // the lightweight re-enable call).
+// THE HOME-TAB VEIL, root-caused by the DOM probe:
+//   IMG{filter=none, op=1, blend=multiply, bg=rgba(0,0,0,0)}
+// Amazon sets mix-blend-mode:multiply on product images. Multiply is a no-op against
+// white (x * 1 = x), so on Amazon's stock light page the images look untouched — but
+// multiply against a DARK backdrop multiplies every pixel by that dark colour, so the
+// photo is literally blended into the background. That is the "semi-transparent black
+// overlay" over the products, and it explains why filter and opacity resets did
+// nothing: neither was ever involved. Forcing mix-blend-mode:normal restores the
+// images exactly. isolation:auto stops a parent stacking context re-introducing it.
+//
 // Fixes object passed as enable()'s 2nd argument. ignoreImageAnalysis:['*'] stops
 // Dark Reader hiding / inverting / solid-filling images — the home-tab product veil.
 // This is the web-side half of the project's core promise: never touch imagery.
@@ -246,7 +256,8 @@ static NSString *ADBundledDarkReaderJS(void){
 static NSString *ADFixesLiteral(void){
     // NSString-escaped CSS. \\n keeps it readable in the log if dumped.
     return @"{css:'"
-            "img,picture,video,canvas,svg{filter:none !important;opacity:1 !important;}"
+            "img,picture,video,canvas,svg{filter:none !important;opacity:1 !important;"
+            "mix-blend-mode:normal !important;isolation:auto !important;}"
             "[style*=\"background-image\"]{filter:none !important;}"
             "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}";
 }
@@ -1529,7 +1540,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.7.1 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.8.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
