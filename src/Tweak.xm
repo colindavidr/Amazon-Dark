@@ -1737,6 +1737,8 @@ static BOOL ADIsTabBarItemish(UIView *v){
             strstr(n,"TabBar") || strstr(n,"NavToolbar"));
 }
 static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
+static int gSwLabelFixed = 0;
+static char gSwSample[96] = {0};
 static void ADSweepViewTree(UIView *v, int depth){
     if (!v || depth > 60) return;
     @try {
@@ -1798,7 +1800,17 @@ static void ADSweepViewTree(UIView *v, int depth){
             } @catch(...) {}
             if (tc && !ADIsModifiedUIColor(tc)) {
                 UIColor *mt = ADModifyUIColor(tc, ADColorRoleForeground);
-                if (mt) l.textColor = mt;
+                if (mt) { l.textColor = mt; gSwLabelFixed++; }
+                else if (!gSwSample[0]) {
+                    // Record ONE declined label so we can see what it actually is.
+                    @try {
+                        CGFloat r2,g2,b2,a2;
+                        BOOL ok = [tc getRed:&r2 green:&g2 blue:&b2 alpha:&a2];
+                        snprintf(gSwSample, sizeof(gSwSample), "%s rgba=%s%.2f,%.2f,%.2f,%.2f",
+                                 object_getClassName(l), ok ? "" : "UNREADABLE ",
+                                 ok?r2:0, ok?g2:0, ok?b2:0, ok?a2:0);
+                    } @catch(...) {}
+                }
             }
         } else if ([v respondsToSelector:@selector(textColor)] &&
                    [v respondsToSelector:@selector(setTextColor:)]) {
@@ -1834,14 +1846,17 @@ static void ADSweepAllWindows(void){
     if (!ADRecolorOn()) return;
     @try {
         int nwin = 0;
-        gSwViews = gSwImgSeen = gSwGlyphFixed = gSwDarkLabels = 0;
+        gSwViews = gSwImgSeen = gSwGlyphFixed = gSwDarkLabels = gSwLabelFixed = 0;
+        gSwSample[0] = 0;
         for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
             if (![sc isKindOfClass:[UIWindowScene class]]) continue;
             for (UIWindow *w in ((UIWindowScene *)sc).windows){ nwin++; ADSweepViewTree(w, 0); }
         }
         static NSString *last = nil;
-        NSString *now = [NSString stringWithFormat:@"win=%d views=%d img=%d glyphFixed=%d darkLabels=%d",
-                         nwin, gSwViews, gSwImgSeen, gSwGlyphFixed, gSwDarkLabels];
+        NSString *now = [NSString stringWithFormat:
+                         @"win=%d views=%d img=%d glyphFixed=%d darkLabels=%d labelFixed=%d%s%s",
+                         nwin, gSwViews, gSwImgSeen, gSwGlyphFixed, gSwDarkLabels, gSwLabelFixed,
+                         gSwSample[0] ? " declined=" : "", gSwSample[0] ? gSwSample : ""];
         if (!last || ![last isEqualToString:now]){ last = now; ADLog(@"sweep %@", now); }
     } @catch(...) {}
 }
@@ -1990,7 +2005,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.16.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.17.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {

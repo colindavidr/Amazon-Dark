@@ -139,13 +139,15 @@ BOOL ADIsDarkGlyph(UIImage *img){
     // Glyphs are small. A large asset is a photo or banner; leave it alone.
     if (W > 256 || H > 256) return NO;
 
-    // Must have alpha — a fully opaque rectangle is not an icon, and recolouring it
-    // would repaint a real image.
-    CGImageAlphaInfo ai = CGImageGetAlphaInfo(src);
-    BOOL hasAlpha = (ai == kCGImageAlphaFirst || ai == kCGImageAlphaLast ||
-                     ai == kCGImageAlphaPremultipliedFirst ||
-                     ai == kCGImageAlphaPremultipliedLast);
-    if (!hasAlpha) return NO;
+    // NO alpha-info gate. The previous version required kCGImageAlphaFirst/Last/
+    // Premultiplied*, which rejected everything else outright - and iOS decodes
+    // asset-catalog icons as kCGImageAlphaOnly (template masks) or
+    // kCGImageAlphaNoneSkipLast, both of which failed instantly. On device that showed
+    // up as glyphFixed=0 while the sweep walked past 19 image views every pass, i.e.
+    // every glyph fix since v5.12 was a no-op on native icons.
+    //
+    // Transparency is measured from the drawn buffer below instead, which is accurate
+    // regardless of how the source declares itself.
 
     size_t bpr = W * 4;
     uint8_t *buf = (uint8_t *)calloc(H, bpr);
@@ -158,13 +160,14 @@ BOOL ADIsDarkGlyph(UIImage *img){
     CGContextDrawImage(ctx, CGRectMake(0,0,W,H), src);
 
     double sumL = 0, sumChroma = 0;
-    long n = 0;
+    long n = 0, transparent = 0, total = 0;
     size_t stepX = (W > 32) ? W/32 : 1;
     size_t stepY = (H > 32) ? H/32 : 1;
     for (size_t y = 0; y < H; y += stepY){
         for (size_t x = 0; x < W; x += stepX){
             uint8_t *p = buf + y*bpr + x*4;
-            if (p[3] < 128) continue;                  // ignore transparent areas
+            total++;
+            if (p[3] < 128) { transparent++; continue; }  // see-through: not artwork
             int r = p[0], g = p[1], b = p[2];
             int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
             int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
@@ -175,9 +178,16 @@ BOOL ADIsDarkGlyph(UIImage *img){
     }
     CGContextRelease(ctx);
     free(buf);
-    if (n < 8) return NO;                              // essentially empty
+    if (n < 8 || total == 0) return NO;                // essentially empty
 
     double meanL = sumL / n, meanC = sumChroma / n;
-    // Dark and near-neutral => a monochrome glyph that will vanish on a dark surface.
-    return (meanL < 0.38 && meanC < 0.20);
+    double clearFrac = (double)transparent / (double)total;
+
+    // Two ways to qualify, both requiring dark + near-neutral artwork:
+    //   (a) a real icon: meaningful see-through area around the strokes;
+    //   (b) a small solid glyph with no transparency at all, held to a stricter
+    //       darkness/neutrality bar so a small dark PHOTO cannot match.
+    if (clearFrac > 0.15 && meanL < 0.42 && meanC < 0.22) return YES;
+    if (W <= 64 && H <= 64 && meanL < 0.25 && meanC < 0.12) return YES;
+    return NO;
 }
