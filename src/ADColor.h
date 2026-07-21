@@ -74,6 +74,11 @@ CGColorRef ADModifyCGColor(CGColorRef c, ADColorRole role) CF_RETURNS_NOT_RETAIN
 /// YES if this exact colour is one we emitted — used to short-circuit re-entry.
 BOOL ADIsModifiedUIColor(UIColor *c);
 
+/// Role-aware variant. Re-entry safety only needs to recognise our output within the
+/// SAME role; matching across roles makes every emitted dark background shadow the
+/// app's dark text and suppress it entirely.
+BOOL ADIsModifiedUIColorForRole(UIColor *c, ADColorRole role);
+
 /// Convenience: parse "#rrggbb" into the pole fields of a config.
 void ADParseHexInto(const char *hex, double *r, double *g, double *b);
 

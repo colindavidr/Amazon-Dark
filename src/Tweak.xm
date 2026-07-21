@@ -1737,7 +1737,7 @@ static BOOL ADIsTabBarItemish(UIView *v){
             strstr(n,"TabBar") || strstr(n,"NavToolbar"));
 }
 static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
-static int gSwLabelFixed = 0;
+static int gSwLabelFixed = 0, gSwTemplateSeen = 0, gSwTintFixed = 0;
 static char gSwSample[96] = {0};
 static void ADSweepViewTree(UIView *v, int depth){
     if (!v || depth > 60) return;
@@ -1771,7 +1771,18 @@ static void ADSweepViewTree(UIView *v, int depth){
         gSwViews++;
         if ([v isKindOfClass:[UIImageView class]]){
             @try {
-                if (((UIImageView *)v).image) gSwImgSeen++;
+                UIImageView *iv = (UIImageView *)v;
+                if (iv.image) gSwImgSeen++;
+                if (iv.image && iv.image.renderingMode == UIImageRenderingModeAlwaysTemplate){
+                    gSwTemplateSeen++;
+                    UIColor *tint = iv.tintColor;
+                    CGFloat tr,tg,tb,ta;
+                    if (tint && [tint getRed:&tr green:&tg blue:&tb alpha:&ta] &&
+                        (0.2126*tr + 0.7152*tg + 0.0722*tb) < 0.45){
+                        ((UIView *)iv).tintColor = ADColorFromHex(gP.fgHex);
+                        gSwTintFixed++;
+                    }
+                }
                 UIImage *tpl = ADGlyphify(((UIImageView *)v).image);
                 if (tpl) gSwGlyphFixed++;
                 if (tpl){
@@ -1782,7 +1793,18 @@ static void ADSweepViewTree(UIView *v, int depth){
         } else if ([v isKindOfClass:[UIButton class]]){
             @try {
                 UIButton *b = (UIButton *)v;
-                UIImage *tpl = ADGlyphify(b.currentImage);
+                UIImage *cur = b.currentImage;
+                if (cur && cur.renderingMode == UIImageRenderingModeAlwaysTemplate){
+                    gSwTemplateSeen++;
+                    UIColor *tint = b.tintColor;
+                    CGFloat tr,tg,tb,ta;
+                    if (tint && [tint getRed:&tr green:&tg blue:&tb alpha:&ta] &&
+                        (0.2126*tr + 0.7152*tg + 0.0722*tb) < 0.45){
+                        ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
+                        gSwTintFixed++;
+                    }
+                }
+                UIImage *tpl = ADGlyphify(cur);
                 if (tpl){
                     ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
                     [b setImage:tpl forState:UIControlStateNormal];
@@ -1847,6 +1869,7 @@ static void ADSweepAllWindows(void){
     @try {
         int nwin = 0;
         gSwViews = gSwImgSeen = gSwGlyphFixed = gSwDarkLabels = gSwLabelFixed = 0;
+        gSwTemplateSeen = gSwTintFixed = 0;
         gSwSample[0] = 0;
         for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
             if (![sc isKindOfClass:[UIWindowScene class]]) continue;
@@ -1854,8 +1877,9 @@ static void ADSweepAllWindows(void){
         }
         static NSString *last = nil;
         NSString *now = [NSString stringWithFormat:
-                         @"win=%d views=%d img=%d glyphFixed=%d darkLabels=%d labelFixed=%d%s%s",
-                         nwin, gSwViews, gSwImgSeen, gSwGlyphFixed, gSwDarkLabels, gSwLabelFixed,
+                         @"win=%d views=%d img=%d tmpl=%d tintFixed=%d glyphFixed=%d darkLabels=%d labelFixed=%d%s%s",
+                         nwin, gSwViews, gSwImgSeen, gSwTemplateSeen, gSwTintFixed,
+                         gSwGlyphFixed, gSwDarkLabels, gSwLabelFixed,
                          gSwSample[0] ? " declined=" : "", gSwSample[0] ? gSwSample : ""];
         if (!last || ![last isEqualToString:now]){ last = now; ADLog(@"sweep %@", now); }
     } @catch(...) {}
@@ -2005,7 +2029,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.17.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.18.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {

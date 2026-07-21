@@ -337,14 +337,16 @@ static BOOL ADRGBAOf(UIColor *c, CGFloat *r, CGFloat *g, CGFloat *b, CGFloat *a)
 
 static const void *kADModifiedKey = &kADModifiedKey;
 
-BOOL ADIsModifiedUIColor(UIColor *c) {
+BOOL ADIsModifiedUIColorForRole(UIColor *c, ADColorRole role) {
     if (!c) return NO;
     if (objc_getAssociatedObject(c, kADModifiedKey)) return YES;
     CGFloat r, g, b, a;
     if (!ADRGBAOf(c, &r, &g, &b, &a)) return NO;
-    // Role byte is zeroed here: an emitted colour is recognised regardless of which
-    // role produced it, which is what we want for re-entry safety.
-    return ADCacheGet(gOutSet, ADPack(r, g, b, 0) & 0xFFFFFF00u, NULL);
+    // Role-aware. Re-entry safety only needs to recognise output within the SAME
+    // role (UIView.setBackgroundColor -> CALayer.setBackgroundColor is background ->
+    // background). Matching across roles instead made every dark background we emit
+    // shadow Amazon's dark TEXT, so the text was never transformed at all.
+    return ADCacheGet(gOutSet, ADPack(r, g, b, role), NULL);
 }
 
 UIColor *ADModifyUIColor(UIColor *c, ADColorRole role) {
@@ -352,7 +354,7 @@ UIColor *ADModifyUIColor(UIColor *c, ADColorRole role) {
     CGFloat r, g, b, a;
     if (!ADRGBAOf(c, &r, &g, &b, &a)) return nil;      // pattern / unsupported space
     if (a <= 0.001) return nil;                        // fully transparent: nothing to do
-    if (ADIsModifiedUIColor(c)) return nil;            // already ours
+    if (ADIsModifiedUIColorForRole(c, role)) return nil;   // already ours, same role
 
     // Resolve Auto up-front so the memo key matches the curve actually used.
     // One-way: a dark fill is returned untouched (see ADModifyRGB for why).
@@ -387,7 +389,7 @@ UIColor *ADModifyUIColor(UIColor *c, ADColorRole role) {
         ADModifyRGB(role, r, g, b, &nr, &ng, &nb);
         uint32_t outKey = ADPack(nr, ng, nb, role);
         ADCachePut(gCache,  key, outKey);
-        ADCachePut(gOutSet, outKey & 0xFFFFFF00u, 1);
+        ADCachePut(gOutSet, outKey, 1);
     }
 
     UIColor *out = [UIColor colorWithRed:nr green:ng blue:nb alpha:a];
@@ -407,7 +409,7 @@ CGColorRef ADModifyCGColor(CGColorRef c, ADColorRole role) {
     else return NULL;
 
     if (a <= 0.001) return NULL;
-    if (ADCacheGet(gOutSet, ADPack(r, g, b, 0) & 0xFFFFFF00u, NULL)) return NULL;
+    if (ADCacheGet(gOutSet, ADPack(r, g, b, role), NULL)) return NULL;
 
     uint32_t key = ADPack(r, g, b, role);
     uint32_t packed;
@@ -420,10 +422,16 @@ CGColorRef ADModifyCGColor(CGColorRef c, ADColorRole role) {
         ADModifyRGB(role, r, g, b, &nr, &ng, &nb);
         uint32_t outKey = ADPack(nr, ng, nb, role);
         ADCachePut(gCache,  key, outKey);
-        ADCachePut(gOutSet, outKey & 0xFFFFFF00u, 1);
+        ADCachePut(gOutSet, outKey, 1);
     }
     // Autoreleased via UIColor so callers need not manage lifetime.
     return [UIColor colorWithRed:nr green:ng blue:nb alpha:a].CGColor;
+}
+
+BOOL ADIsModifiedUIColor(UIColor *c) {
+    // Object-identity only. The value-based test needs a role to be meaningful, so
+    // callers that care about a specific role must use ADIsModifiedUIColorForRole.
+    return (c && objc_getAssociatedObject(c, kADModifiedKey) != nil);
 }
 
 void ADParseHexInto(const char *hex, double *r, double *g, double *b) {
