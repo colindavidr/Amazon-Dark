@@ -327,7 +327,14 @@ static NSString *ADDarkReaderBootstrap(void){
            // background-image element or wrapper. Lighten/screen/overlay are left
            // alone - they add light, which is harmless here.
            "var BAD={'multiply':1,'darken':1,'color-burn':1};"
-           "var els=document.querySelectorAll('body *'),n=0,bfix=0;"
+           "function collect(root,out,depth){try{"
+             "var list=root.querySelectorAll('*');"
+             "for(var a=0;a<list.length;a++){var e=list[a];out.push(e);"
+               // Shadow roots are separate trees: querySelectorAll stops at the host,
+               // so anything Amazon builds inside one is unreachable from the document.
+               "if(e.shadowRoot&&depth<4&&out.length<6000)collect(e.shadowRoot,out,depth+1);}"
+             "}catch(e){}return out;}"
+           "var els=collect(document.body,[],0),n=0,bfix=0;"
            "for(var i=0;i<els.length;i++){var el=els[i];"
              "var cs=getComputedStyle(el);"
              "if(BAD[cs.mixBlendMode]&&bfix<800){"
@@ -1718,6 +1725,32 @@ static void ADSweepViewTree(UIView *v, int depth){
             UIColor *m = ADModifyUIColor(bg, ADColorRoleBackground);
             if (m) v.backgroundColor = m;
         }
+        // GLYPH RESCUE. Our setImage: hooks only fire when the app calls that setter.
+        // An icon supplied through UIButtonConfiguration (iOS 15+), set during init,
+        // or assigned before injection never triggers them and stays black. Reading
+        // the CURRENT image here catches it regardless of how it got there — measured
+        // on device, the search-pane X and history glyphs were still near-black under
+        // v5.14.0, which means no setter path reached them. ADGlyphify caches both
+        // outcomes, so a view swept repeatedly costs a dictionary lookup.
+        if ([v isKindOfClass:[UIImageView class]]){
+            @try {
+                UIImage *tpl = ADGlyphify(((UIImageView *)v).image);
+                if (tpl){
+                    ((UIView *)v).tintColor = ADColorFromHex(gP.fgHex);
+                    ((UIImageView *)v).image = tpl;
+                }
+            } @catch(...) {}
+        } else if ([v isKindOfClass:[UIButton class]]){
+            @try {
+                UIButton *b = (UIButton *)v;
+                UIImage *tpl = ADGlyphify(b.currentImage);
+                if (tpl){
+                    ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
+                    [b setImage:tpl forState:UIControlStateNormal];
+                }
+            } @catch(...) {}
+        }
+
         if ([v isKindOfClass:[UILabel class]]){
             UILabel *l = (UILabel *)v;
             UIColor *tc = l.textColor;
@@ -1909,7 +1942,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.14.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.15.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
