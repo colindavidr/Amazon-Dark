@@ -1773,7 +1773,7 @@ static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
 static int gSwLabelFixed = 0, gSwTemplateSeen = 0, gSwTintFixed = 0;
 static char gSwSample[96] = {0};
 static char gSwTintNow[64] = {0};
-static void ADSweepViewTree(UIView *v, int depth){
+static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
     if (!v || depth > 60) return;
     @try {
         if (ADIsWebKitOwned(v)) return;                 // Dark Reader's territory
@@ -1783,7 +1783,7 @@ static void ADSweepViewTree(UIView *v, int depth){
         // appearing or not depending on whether that view happened to be installed
         // for the current tab state. Only the icon and label work needs holding back
         // here; the fill still has to be darkened like everything else.
-        BOOL tabBarish = ADIsTabBarItemish(v);
+        BOOL tabBarish = inTabBar || ADIsTabBarItemish(v);   // INHERITED, not re-derived
         UIColor *bg = v.backgroundColor;
         if (bg && !ADIsModifiedUIColor(bg)) {
             // Assign the TRANSFORMED colour, never the same object back.
@@ -1899,7 +1899,7 @@ static void ADSweepViewTree(UIView *v, int depth){
                 }
             } @catch(...) {}
         }
-        if ([v isKindOfClass:[UIButton class]]){
+        if (!tabBarish && [v isKindOfClass:[UIButton class]]){
             // Button titles follow the same rule, and a button whose title colour was
             // never explicitly set is exactly the case the setTitleColor: hook cannot see.
             @try {
@@ -1911,9 +1911,55 @@ static void ADSweepViewTree(UIView *v, int depth){
                 }
             } @catch(...) {}
         }
-        for (UIView *s in v.subviews) ADSweepViewTree(s, depth + 1);
+        for (UIView *s in v.subviews) ADSweepViewTree(s, depth + 1, tabBarish);
     } @catch(...) {}
 }
+// ─── sweep a cell as it comes into view ───────────────────────────────────────────
+// The launch timer stops after ~40s by design, so content built later is only
+// corrected when some unrelated event happens to fire a sweep. That is the "dark at
+// first, correct once you have been scrolling a while" lag on the home feed: the
+// transform is right, it is just arriving late.
+//
+// didMoveToWindow is the wrong moment -- a REUSED cell never leaves the window, so
+// it would fire on first appearance and never again, which is exactly the scrolling
+// case we need. layoutSubviews fires after the cell is reconfigured, so the colours
+// we are about to read are the final ones. Guarded by a per-reuse flag cleared in
+// prepareForReuse, so each cell is swept once per reuse cycle rather than on every
+// layout pass.
+static const void *kADCellSwept = &kADCellSwept;
+
+%hook UICollectionViewCell
+- (void)prepareForReuse {
+    %orig;
+    objc_setAssociatedObject(self, kADCellSwept, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+- (void)layoutSubviews {
+    %orig;
+    @try {
+        if (!ADRecolorOn() || !self.window) return;
+        if (objc_getAssociatedObject(self, kADCellSwept)) return;
+        objc_setAssociatedObject(self, kADCellSwept, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ADSweepViewTree(self, 0, NO);
+    } @catch(...) {}
+}
+%end
+
+%hook UITableViewCell
+- (void)prepareForReuse {
+    %orig;
+    objc_setAssociatedObject(self, kADCellSwept, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+- (void)layoutSubviews {
+    %orig;
+    @try {
+        if (!ADRecolorOn() || !self.window) return;
+        if (objc_getAssociatedObject(self, kADCellSwept)) return;
+        objc_setAssociatedObject(self, kADCellSwept, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ADSweepViewTree(self, 0, NO);
+    } @catch(...) {}
+}
+%end
+
 static void ADSweepAllWindows(void){
     if (!ADRecolorOn()) return;
     @try {
@@ -1924,7 +1970,7 @@ static void ADSweepAllWindows(void){
         gSwTintNow[0] = 0;
         for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
             if (![sc isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *w in ((UIWindowScene *)sc).windows){ nwin++; ADSweepViewTree(w, 0); }
+            for (UIWindow *w in ((UIWindowScene *)sc).windows){ nwin++; ADSweepViewTree(w, 0, NO); }
         }
         static NSString *last = nil;
         NSString *now = [NSString stringWithFormat:
