@@ -478,9 +478,12 @@ static NSString *ADDarkReaderBootstrap(void){
                  "pe=pe.parentElement;}"
                // glyph: mask -> its background-color IS the fill; img/bgimg -> invert;
                // svg/plain -> fill/color. Never brightness(0), which flattens the box.
+               "var hrc=he.getBoundingClientRect();"
+               "var isGlyph=(hrc.width>0&&hrc.width<=36&&hrc.height>0&&hrc.height<=36);"
                "var hmi=hcs.webkitMaskImage||hcs.maskImage;"
-               "if(hmi&&hmi!=='none'){he.style.setProperty('background-color',FG,'important');}"
-               "else if(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none')){"
+               "if(hmi&&hmi!=='none'&&isGlyph){he.style.setProperty('background-color',FG,'important');}"
+               "else if(hmi&&hmi!=='none'){he.style.setProperty('background-color',BG,'important');}"
+               "else if(isGlyph&&(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none'))){"
                  "he.style.setProperty('filter','invert(1)','important');}"
                "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
                  "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
@@ -1101,6 +1104,25 @@ static UIColor *ADBarBlue(void){
     return ADColorFromHex("#00A8E1");            // marked-own fallback
 }
 static UIColor *ADBarWhite(void){ return ADColorFromHex(gP.fgHex); }   // marked-own ~white
+static const void *kADBarSelKey = &kADBarSelKey;
+static void ADRememberBarSelection(UIView *root, BOOL selected){
+    if (!root) return;
+    @try {
+        objc_setAssociatedObject(root, kADBarSelKey, @(selected), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        for (UIView *s in root.subviews) ADRememberBarSelection(s, selected);
+    } @catch(...) {}
+}
+// Recorded state beats a live ancestor walk: during a tap the walk can observe the
+// pre-tap value and repaint blue over the white we just set.
+static BOOL ADBarSelectionKnown(UIView *v, BOOL *out){
+    int d = 0;
+    while (v && d++ < 12){
+        NSNumber *n = objc_getAssociatedObject(v, kADBarSelKey);
+        if (n){ *out = n.boolValue; return YES; }
+        v = v.superview;
+    }
+    return NO;
+}
 static BOOL ADViewIsSelectedInBar(UIView *v){
     int d = 0;
     while (v && d++ < 12){
@@ -1180,7 +1202,9 @@ static void ADApplyBarTint(UIView *container, BOOL selected){
             if (!ADIsOwnColor(color)){
                 // Resolve to a local -- Logos's %orig tokenizer rejects a nested call
                 // in its arguments, which is what broke the v5.28.0 CI lint.
-                UIColor *want = ADViewIsSelectedInBar(self) ? ADBarWhite() : ADBarBlue();
+                BOOL sel = NO;
+                if (!ADBarSelectionKnown(self, &sel)) sel = ADViewIsSelectedInBar(self);
+                UIColor *want = sel ? ADBarWhite() : ADBarBlue();
                 %orig(want);
                 return;
             }
@@ -2077,7 +2101,14 @@ static UIImage *ADGlyphify(UIImage *img){
 %hook UIControl
 - (void)setSelected:(BOOL)selected {
     %orig;
-    @try { if (ADRecolorOn() && ADInTabBarChain(self)) ADApplyBarTint(self, selected); } @catch(...) {}
+    @try {
+        if (ADRecolorOn() && ADInTabBarChain(self)){
+            // Record first so any tint assignment triggered by this change reads the
+            // NEW value rather than re-deriving a stale one.
+            ADRememberBarSelection(self, selected);
+            ADApplyBarTint(self, selected);
+        }
+    } @catch(...) {}
 }
 %end
 
@@ -2143,6 +2174,20 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
             const char *scn = object_getClassName(v);
             if (scn && strstr(scn, "BarBackgroundShadow"))
                 ((UIView *)v).backgroundColor = ADBarWhite();   // whiten the top hairline
+            // Selection indicator: the short bar above the active symbol. It was being
+            // logged but never recoloured, so it stayed the app's dark grey. Width is
+            // what separates it from the full-width hairline -- the indicator spans one
+            // tab, the separator spans the bar -- and it is only lit for the selected
+            // tab so the others do not all light up.
+            @try {
+                CGFloat ih = v.bounds.size.height, iw = v.bounds.size.width;
+                if (ih > 0 && ih < 8 && iw > 12 && iw < 160 &&
+                    ![v isKindOfClass:[UIImageView class]] && ![v isKindOfClass:[UIButton class]]){
+                    BOOL isel = NO;
+                    if (!ADBarSelectionKnown(v, &isel)) isel = ADViewIsSelectedInBar(v);
+                    if (isel) ((UIView *)v).backgroundColor = ADBarWhite();
+                }
+            } @catch(...) {}
         }
         UIColor *bg = v.backgroundColor;
         if (bg && !ADIsOwnColor(bg) && !ADIsModifiedUIColor(bg)) {
