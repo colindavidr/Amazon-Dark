@@ -333,6 +333,18 @@ static NSString *ADDarkReaderBootstrap(void){
              "if(BAD[cs.mixBlendMode]&&bfix<800){"
                "el.style.setProperty('mix-blend-mode','normal','important');"
                "el.style.setProperty('isolation','auto','important');bfix++;}"
+             // SVG icons. Dark Reader recolours CSS 'color'; it does not touch the
+             // fill/stroke PRESENTATION ATTRIBUTES that line-art icons use, so an
+             // <svg fill="#000"> stays black on a themed page. Measured on device:
+             // the X and recent-search glyphs sit at rgb(12,13,14) - actually darker
+             // than the rgb(24,26,27) background - while text on the same page themed
+             // correctly. Only dark fills are redirected, so multi-colour artwork and
+             // brand marks keep their palette.
+             "if(el.namespaceURI==='http://www.w3.org/2000/svg'){"
+               "var fl2=lum(cs.fill),sl=lum(cs.stroke);"
+               "if(fl2!==null&&fl2<0.22){el.style.setProperty('fill',FG,'important');n++;}"
+               "if(sl!==null&&sl<0.22){el.style.setProperty('stroke',FG,'important');n++;}"
+             "}"
              "if(n>=400)continue;"
              "var t=false;"
              "for(var k=0;k<el.childNodes.length;k++){var nd=el.childNodes[k];"
@@ -1713,6 +1725,32 @@ static void ADSweepViewTree(UIView *v, int depth){
                 UIColor *mt = ADModifyUIColor(tc, ADColorRoleForeground);
                 if (mt) l.textColor = mt;
             }
+        } else if ([v respondsToSelector:@selector(textColor)] &&
+                   [v respondsToSelector:@selector(setTextColor:)]) {
+            // Any other view exposing textColor — UITextView/UITextField and Amazon's
+            // own label subclasses. Needed because our setter hooks only fire when the
+            // app ASSIGNS a colour: a label that never sets one and inherits the
+            // default black is never intercepted, so the sweep is its only chance.
+            // Measured on device: 'Search with photo' was sitting at pure rgb(0,0,0).
+            @try {
+                UIColor *tc = [(id)v textColor];
+                if (tc && !ADIsModifiedUIColor(tc)){
+                    UIColor *mt = ADModifyUIColor(tc, ADColorRoleForeground);
+                    if (mt) [(id)v setTextColor:mt];
+                }
+            } @catch(...) {}
+        }
+        if ([v isKindOfClass:[UIButton class]]){
+            // Button titles follow the same rule, and a button whose title colour was
+            // never explicitly set is exactly the case the setTitleColor: hook cannot see.
+            @try {
+                UIButton *b = (UIButton *)v;
+                UIColor *tc = b.titleLabel.textColor;
+                if (tc && !ADIsModifiedUIColor(tc)){
+                    UIColor *mt = ADModifyUIColor(tc, ADColorRoleForeground);
+                    if (mt) [b setTitleColor:mt forState:UIControlStateNormal];
+                }
+            } @catch(...) {}
         }
         for (UIView *s in v.subviews) ADSweepViewTree(s, depth + 1);
     } @catch(...) {}
@@ -1871,7 +1909,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.13.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.14.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
