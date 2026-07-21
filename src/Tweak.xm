@@ -352,6 +352,26 @@ static NSString *ADDarkReaderBootstrap(void){
                "if(fl2!==null&&fl2<0.22){el.style.setProperty('fill',FG,'important');n++;}"
                "if(sl!==null&&sl<0.22){el.style.setProperty('stroke',FG,'important');n++;}"
              "}"
+             // ICON FONTS / PSEUDO-ELEMENT GLYPHS. The text pass below requires a
+             // literal child text node, and a ::before glyph has none - the character
+             // lives in generated content. So an icon font renders in the element's
+             // own dark `color` and nothing above ever looks at it. This is the single
+             // most likely reason autocomplete reports 0/0 while its clock and X
+             // glyphs sit there black.
+             "function hasC(p){if(!p)return false;var c=p.content;"
+               "if(!c||c==='none'||c==='normal')return false;return c.length>2;}"
+             "try{var pb=getComputedStyle(el,'::before'),pa=getComputedStyle(el,'::after');"
+               "if((hasC(pb)||hasC(pa))&&n<400){var pcl=lum(cs.color);"
+                 "if(pcl!==null&&pcl<0.30){el.style.setProperty('color',FG,'important');n++;}}"
+             "}catch(e){}"
+             // MASK-IMAGE ICONS. The mask is the shape; the visible colour is the
+             // element's background-color. Dark Reader treats that as a background and
+             // darkens it, which paints the glyph in the page background colour - i.e.
+             // makes it vanish rather than merely stay dark.
+             "try{var mi=cs.webkitMaskImage||cs.maskImage;"
+               "if(mi&&mi!=='none'&&n<400){var mbl=lum(cs.backgroundColor);"
+                 "if(mbl!==null&&mbl<0.30){el.style.setProperty('background-color',FG,'important');n++;}}"
+             "}catch(e){}"
              "if(n>=400)continue;"
              "var t=false;"
              "for(var k=0;k<el.childNodes.length;k++){var nd=el.childNodes[k];"
@@ -360,7 +380,31 @@ static NSString *ADDarkReaderBootstrap(void){
              "var fl=lum(cs.color);if(fl===null)continue;"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
-           "return n+'/'+bfix;}catch(e){return -1;}};"
+           // One-shot probe. Two builds have now been spent inferring what paints
+           // these glyphs from what does NOT move. Cheaper to just ask the DOM: report
+           // the first few icon-sized elements and which mechanism draws each, so the
+           // next change targets a known selector instead of a guess.
+           "var pr='';try{if(!window.__AMZDARK_PROBED__){window.__AMZDARK_PROBED__=1;"
+             "var seen={},acc=[];"
+             "for(var q=0;q<els.length&&acc.length<8;q++){var pe=els[q];"
+               "var rc=pe.getBoundingClientRect();"
+               "if(rc.width<6||rc.width>40||rc.height<6||rc.height>40)continue;"
+               "if(pe.children.length>2)continue;"
+               "var pcs=getComputedStyle(pe),tg=pe.tagName.toLowerCase(),kind='';"
+               "var pbi=pcs.backgroundImage,pmi=pcs.webkitMaskImage||pcs.maskImage;"
+               "var ppb=getComputedStyle(pe,'::before');"
+               "if(tg==='img')kind='img';"
+               "else if(pmi&&pmi!=='none')kind='mask';"
+               "else if(pbi&&pbi!=='none')kind='bgimg';"
+               "else if(hasC(ppb))kind='pseudo';"
+               "else if(pe.namespaceURI==='http://www.w3.org/2000/svg')kind='svg';"
+               "else continue;"
+               "var cn=pe.className;if(cn&&cn.baseVal!==undefined)cn=cn.baseVal;"
+               "cn=(cn||'').toString().split(' ')[0].slice(0,22);"
+               "var k=kind+'.'+cn;if(seen[k])continue;seen[k]=1;"
+               "acc.push(k+'@'+Math.round(rc.width)+'x'+Math.round(rc.height)+'/'+pcs.color);}"
+             "pr=acc.length?(' probe='+acc.join(' ')):' probe=none';}}catch(e){pr=' probeERR';}"
+           "return n+'/'+bfix+pr;}catch(e){return -1;}};"
          "window.__AMZDARK_APPLY__=function(){try{"
            "if(!document.querySelector('style.darkreader'))DarkReader.enable(%@,%@);"
            "window.__AMZDARK_FIXCONTRAST__();"
