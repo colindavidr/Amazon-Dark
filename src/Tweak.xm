@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.30.0"
+#define AD_VERSION "v5.31.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -279,7 +279,8 @@ static NSString *ADFixesLiteral(void){
         : @"";
     return [NSString stringWithFormat:
             @"{css:'"
-             "img,picture,video,canvas,svg{filter:none !important;opacity:1 !important;"
+             "img:not([class*=heart]):not([class*=wish]):not([class*=lists-framework]),"
+             "picture,video,canvas,svg{filter:none !important;opacity:1 !important;"
              "mix-blend-mode:normal !important;isolation:auto !important;}"
              "%@"
              "[style*=\\\"background-image\\\"]{filter:none !important;}"
@@ -1114,6 +1115,13 @@ static UIColor *ADBarBlue(void){
 }
 static UIColor *ADBarWhite(void){ return ADColorFromHex(gP.fgHex); }   // marked-own ~white
 static const void *kADBarSelKey = &kADBarSelKey;
+static const void *kADIndicatorKey = &kADIndicatorKey;
+static inline BOOL ADIsTaggedIndicator(UIView *v){
+    return v && objc_getAssociatedObject(v, kADIndicatorKey) != nil;
+}
+static inline void ADTagIndicator(UIView *v){
+    if (v) objc_setAssociatedObject(v, kADIndicatorKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 static void ADRememberBarSelection(UIView *root, BOOL selected){
     if (!root) return;
     @try {
@@ -1150,7 +1158,16 @@ static void ADTintBarIcon(UIImageView *iv, BOOL selected){
             UIImage *tpl = [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
             if (tpl){ ADMarkModifiedImage(tpl); iv.image = tpl; }
         }
-        ((UIView *)iv).tintColor = selected ? ADBarWhite() : ADBarBlue();
+        UIColor *want = selected ? ADBarWhite() : ADBarBlue();
+        // Idempotent: only write when it would actually change something. Each write
+        // provokes another setTintColor:, so unconditional writes keep the loop alive.
+        UIColor *cur = ((UIView *)iv).tintColor;
+        CGFloat cr,cg,cb,ca,wr,wg,wb,wa;
+        BOOL same = cur &&
+            [cur getRed:&cr green:&cg blue:&cb alpha:&ca] &&
+            [want getRed:&wr green:&wg blue:&wb alpha:&wa] &&
+            fabs(cr-wr) < 0.01 && fabs(cg-wg) < 0.01 && fabs(cb-wb) < 0.01;
+        if (!same) ((UIView *)iv).tintColor = want;
     } @catch(...) {}
 }
 static BOOL gBarFixPending = NO;
@@ -1199,8 +1216,10 @@ static void ADApplyBarTint(UIView *container, BOOL selected){
         // active tab draws one, so no selection test is needed -- and the earlier
         // test was what suppressed this, since the indicator is not inside the
         // selected control's subtree. Width separates it from the 430-wide hairline.
-        CGFloat bh = self.bounds.size.height, bw = self.bounds.size.width;
-        if (bh > 0 && bh < 8 && bw > 12 && bw < 160 && ADInTabBarChain(self)){
+        // Tagged by the sweep, which runs after layout. Measuring here is unreliable:
+        // setBackgroundColor: often precedes layout, so bounds read 0x0 and any size
+        // test fails silently -- the reason the previous attempt never took effect.
+        if (ADIsTaggedIndicator(self)){
             UIColor *ind = ADBarWhite();
             %orig(ind);
             return;
@@ -1252,6 +1271,15 @@ static void ADApplyBarTint(UIView *container, BOOL selected){
                 BOOL sel = NO;
                 if (!ADBarSelectionKnown(self, &sel)) sel = ADViewIsSelectedInBar(self);
                 UIColor *want = sel ? ADBarWhite() : ADBarBlue();
+                CGFloat ir,ig,ib,ia,tr2,tg2,tb2,ta2;
+                BOOL alreadyWanted = color &&
+                    [color getRed:&ir green:&ig blue:&ib alpha:&ia] &&
+                    [want getRed:&tr2 green:&tg2 blue:&tb2 alpha:&ta2] &&
+                    fabs(ir-tr2) < 0.01 && fabs(ig-tg2) < 0.01 && fabs(ib-tb2) < 0.01;
+                if (alreadyWanted){
+                    %orig;
+                    return;
+                }
                 ADScheduleBarCorrection();
                 %orig(want);
                 return;
@@ -2232,6 +2260,7 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                 CGFloat ih = v.bounds.size.height, iw = v.bounds.size.width;
                 if (ih > 0 && ih < 8 && iw > 12 && iw < 160 &&
                     ![v isKindOfClass:[UIImageView class]] && ![v isKindOfClass:[UIButton class]]){
+                    ADTagIndicator(v);                    // so reassignments stay white
                     ((UIView *)v).backgroundColor = ADBarWhite();
                 }
             } @catch(...) {}
