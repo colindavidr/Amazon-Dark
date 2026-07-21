@@ -66,6 +66,10 @@
 #import <unistd.h>
 #import <fcntl.h>
 #import <dlfcn.h>
+// Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
+// confirm which build is live on device.
+#define AD_VERSION "v5.29.1"
+
 #import "ADColor.h"
 #import "ADImageKey.h"
 
@@ -479,12 +483,15 @@ static NSString *ADDarkReaderBootstrap(void){
                // glyph: mask -> its background-color IS the fill; img/bgimg -> invert;
                // svg/plain -> fill/color. Never brightness(0), which flattens the box.
                "var hrc=he.getBoundingClientRect();"
-               "var isGlyph=(hrc.width>0&&hrc.width<=36&&hrc.height>0&&hrc.height<=36);"
+               "var isGlyph=(hrc.width>0&&hrc.width<=28&&hrc.height>0&&hrc.height<=28);"
                "var hmi=hcs.webkitMaskImage||hcs.maskImage;"
                "if(hmi&&hmi!=='none'&&isGlyph){he.style.setProperty('background-color',FG,'important');}"
                "else if(hmi&&hmi!=='none'){he.style.setProperty('background-color',BG,'important');}"
-               "else if(isGlyph&&(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none'))){"
-                 "he.style.setProperty('filter','invert(1)','important');}"
+               // No invert here. It flips the whole element, so an <img> holding the
+               // disc AND the heart comes back light -- the reported grey box. Force
+               // the backdrop dark instead and let fill/colour below light the glyph.
+               "else if(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none')){"
+                 "he.style.setProperty('background-color',BG,'important');}"
                "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
                  "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
              "}}catch(e){}"
@@ -2183,14 +2190,20 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                 CGFloat ih = v.bounds.size.height, iw = v.bounds.size.width;
                 if (ih > 0 && ih < 8 && iw > 12 && iw < 160 &&
                     ![v isKindOfClass:[UIImageView class]] && ![v isKindOfClass:[UIButton class]]){
-                    BOOL isel = NO;
-                    if (!ADBarSelectionKnown(v, &isel)) isel = ADViewIsSelectedInBar(v);
-                    if (isel) ((UIView *)v).backgroundColor = ADBarWhite();
+                    ((UIView *)v).backgroundColor = ADBarWhite();
                 }
             } @catch(...) {}
         }
+        // Do not re-darken the tab indicator we just lit.
+        BOOL isTabIndicator = NO;
+        @try {
+            CGFloat th = v.bounds.size.height, tw = v.bounds.size.width;
+            isTabIndicator = (tabBarish && th > 0 && th < 8 && tw > 12 && tw < 160 &&
+                              ![v isKindOfClass:[UIImageView class]] &&
+                              ![v isKindOfClass:[UIButton class]]);
+        } @catch(...) {}
         UIColor *bg = v.backgroundColor;
-        if (bg && !ADIsOwnColor(bg) && !ADIsModifiedUIColor(bg)) {
+        if (!isTabIndicator && bg && !ADIsOwnColor(bg) && !ADIsModifiedUIColor(bg)) {
             // Assign the TRANSFORMED colour, never the same object back.
             //
             // The old code did `v.backgroundColor = bg` and relied on our UIView hook
@@ -2546,7 +2559,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.18.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] " AD_VERSION " init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
