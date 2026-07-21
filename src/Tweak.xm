@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.29.1"
+#define AD_VERSION "v5.30.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -487,9 +487,11 @@ static NSString *ADDarkReaderBootstrap(void){
                "var hmi=hcs.webkitMaskImage||hcs.maskImage;"
                "if(hmi&&hmi!=='none'&&isGlyph){he.style.setProperty('background-color',FG,'important');}"
                "else if(hmi&&hmi!=='none'){he.style.setProperty('background-color',BG,'important');}"
-               // No invert here. It flips the whole element, so an <img> holding the
-               // disc AND the heart comes back light -- the reported grey box. Force
-               // the backdrop dark instead and let fill/colour below light the glyph.
+               // Invert ONLY at glyph size. An <img> holding the disc as well as the
+               // heart comes back light if flipped, which was the grey box; the 28px
+               // cap keeps that to the 24px heart and leaves the 32px disc dark.
+               "else if(isGlyph&&(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none'))){"
+                 "he.style.setProperty('filter','invert(1)','important');}"
                "else if(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none')){"
                  "he.style.setProperty('background-color',BG,'important');}"
                "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
@@ -1151,6 +1153,32 @@ static void ADTintBarIcon(UIImageView *iv, BOOL selected){
         ((UIView *)iv).tintColor = selected ? ADBarWhite() : ADBarBlue();
     } @catch(...) {}
 }
+static BOOL gBarFixPending = NO;
+static BOOL gBarCorrecting  = NO;
+static void ADApplyBarTint(UIView *container, BOOL selected);
+static void ADCorrectBarTintsIn(UIView *v){
+    if (!v) return;
+    @try {
+        if ([v isKindOfClass:[UIControl class]] && ADInTabBarChain(v))
+            ADApplyBarTint(v, ((UIControl *)v).selected);
+        for (UIView *sv in v.subviews) ADCorrectBarTintsIn(sv);
+    } @catch(...) {}
+}
+static void ADScheduleBarCorrection(void){
+    if (gBarFixPending || gBarCorrecting) return;
+    gBarFixPending = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        gBarFixPending = NO;
+        gBarCorrecting = YES;
+        @try {
+            for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
+                if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+                for (UIWindow *w in ((UIWindowScene *)sc).windows) ADCorrectBarTintsIn(w);
+            }
+        } @catch(...) {}
+        gBarCorrecting = NO;
+    });
+}
 static void ADApplyBarTint(UIView *container, BOOL selected){
     if (!container) return;
     @try {
@@ -1166,6 +1194,18 @@ static void ADApplyBarTint(UIView *container, BOOL selected){
         %orig;
         return;
     }
+    @try {
+        // Tab selection indicator: a short thin bar inside the tab bar. Only the
+        // active tab draws one, so no selection test is needed -- and the earlier
+        // test was what suppressed this, since the indicator is not inside the
+        // selected control's subtree. Width separates it from the 430-wide hairline.
+        CGFloat bh = self.bounds.size.height, bw = self.bounds.size.width;
+        if (bh > 0 && bh < 8 && bw > 12 && bw < 160 && ADInTabBarChain(self)){
+            UIColor *ind = ADBarWhite();
+            %orig(ind);
+            return;
+        }
+    } @catch(...) {}
     @try {
         // Kill translucent dark veils. A ~50%-opaque dark fill spread over a large
         // view is a scrim sitting on top of content (the home-tab overlay the probe
@@ -1212,6 +1252,7 @@ static void ADApplyBarTint(UIView *container, BOOL selected){
                 BOOL sel = NO;
                 if (!ADBarSelectionKnown(self, &sel)) sel = ADViewIsSelectedInBar(self);
                 UIColor *want = sel ? ADBarWhite() : ADBarBlue();
+                ADScheduleBarCorrection();
                 %orig(want);
                 return;
             }
@@ -2114,6 +2155,7 @@ static UIImage *ADGlyphify(UIImage *img){
             // NEW value rather than re-deriving a stale one.
             ADRememberBarSelection(self, selected);
             ADApplyBarTint(self, selected);
+            ADScheduleBarCorrection();
         }
     } @catch(...) {}
 }
