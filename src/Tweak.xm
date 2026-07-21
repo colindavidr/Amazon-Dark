@@ -348,6 +348,19 @@ static NSString *ADDarkReaderBootstrap(void){
              // before its children are contrast-checked against it.
              "if(lfix<300){var pl=lum(cs.backgroundColor);"
                "if(pl!==null&&pl>0.55){el.style.setProperty('background-color',BG,'important');lfix++;}}"
+             // LIGHT GRADIENTS. lfix read 0 on every line while a 430x627 light panel
+             // sat on screen, because a gradient lives in background-IMAGE and is
+             // invisible to a backgroundColor check. The probe named it:
+             // div.wd-backdrop-gradient, the 'Researched by Alexa' card. Parse the
+             // stops and only neutralise gradients that actually resolve light, so
+             // decorative dark gradients are left alone.
+             "if(lfix<300){var gbi=cs.backgroundImage||'';"
+               "if(gbi.indexOf('gradient')>=0){var g2=el.getBoundingClientRect();"
+                 "if(g2.width>120&&g2.height>60){var gmx=0,gm,gre=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/g;"
+                   "while((gm=gre.exec(gbi))){var gl2=0.2126*ch(+gm[1])+0.7152*ch(+gm[2])+0.0722*ch(+gm[3]);"
+                     "if(gl2>gmx)gmx=gl2;}"
+                   "if(gmx>0.55){el.style.setProperty('background-image','none','important');"
+                     "el.style.setProperty('background-color',BG,'important');lfix++;}}}}"
              // SPRITE AND <img> GLYPHS -- the heart and the filter control.
              // ignoreImageAnalysis:['*'] switches off Dark Reader's dark-image
              // inversion (added in v5.4.0 to protect product photos) and the injected
@@ -407,7 +420,7 @@ static NSString *ADDarkReaderBootstrap(void){
              // makes it vanish rather than merely stay dark.
              "try{var mi=cs.webkitMaskImage||cs.maskImage;"
                "if(mi&&mi!=='none'&&n<400){var mbl=lum(cs.backgroundColor);"
-                 "if(mbl!==null&&mbl<0.30){el.style.setProperty('background-color',FG,'important');n++;}}"
+                 "if(mbl!==null&&mbl<0.55){el.style.setProperty('background-color',FG,'important');n++;}}"
              "}catch(e){}"
              "if(n>=400)continue;"
              "var t=false;"
@@ -429,7 +442,12 @@ static NSString *ADDarkReaderBootstrap(void){
            // cached THAT. Hence probe=none while gfix was busy matching elements.
            // Only cache a result that actually found something; keep retrying until
            // one does.
-           "var pr='';try{if(!window.__AMZDARK_PROBE_STR__){"
+           // NO CACHE. Cached-once has now been wrong twice: spent on the bootstrap
+           // DOM, then locked to an early snapshot holding only the filter icon while
+           // the product cards had not rendered. Recompute every call -- it is two
+           // bounded scans behind a 400ms debounce -- so the log always describes the
+           // DOM as it stands right now.
+           "var pr='';try{{"
              "var seen={},acc=[];"
              "for(var q=0;q<els.length&&acc.length<8;q++){var pe=els[q];"
                "var rc=pe.getBoundingClientRect();"
@@ -460,10 +478,26 @@ static NSString *ADDarkReaderBootstrap(void){
                "var lc=le.className;if(lc&&lc.baseVal!==undefined)lc=lc.baseVal;"
                "lt.push(le.tagName.toLowerCase()+'.'+(lc||'').toString().split(' ')[0].slice(0,18)"
                  "+'@'+Math.round(lr.width)+'x'+Math.round(lr.height));}"
-             "var ps=(acc.length?(' probe='+acc.join(' ')):'')"
-               "+(lt.length?(' light='+lt.join(' ')):'');"
-             "if(ps)window.__AMZDARK_PROBE_STR__=ps;}"
-           "pr=window.__AMZDARK_PROBE_STR__||' probe=none';}catch(e){pr=' probeERR';}"
+             // Targeted: name the heart's markup directly instead of hoping it lands
+             // in the first N icon-sized elements.
+             "var ht=[];try{var hq=document.querySelectorAll("
+               "'[class*=heart],[class*=wish],[class*=favor],[aria-label*=list],[aria-label*=List]');"
+               "for(var y=0;y<hq.length&&ht.length<4;y++){var he=hq[y];"
+                 "var hr=he.getBoundingClientRect();if(hr.width<4)continue;"
+                 "var hcs=getComputedStyle(he),hk='plain';"
+                 "var hbi=hcs.backgroundImage,hmi=hcs.webkitMaskImage||hcs.maskImage;"
+                 "if(he.tagName.toLowerCase()==='img')hk='img';"
+                 "else if(hmi&&hmi!=='none')hk='mask';"
+                 "else if(hbi&&hbi!=='none')hk='bgimg';"
+                 "else if(he.namespaceURI==='http://www.w3.org/2000/svg')hk='svg';"
+                 "var hc=he.className;if(hc&&hc.baseVal!==undefined)hc=hc.baseVal;"
+                 "ht.push(hk+'.'+(hc||'').toString().split(' ')[0].slice(0,20)"
+                   "+'@'+Math.round(hr.width)+'x'+Math.round(hr.height)"
+                   "+'/f:'+(hcs.fill||'-')+'/c:'+hcs.color);}}catch(e){}"
+             "pr=(acc.length?(' probe='+acc.join(' ')):' probe=none')"
+               "+(lt.length?(' light='+lt.join(' ')):'')"
+               "+(ht.length?(' HEART='+ht.join(' ')):'');}"
+           "}catch(e){pr=' probeERR';}"
            "return n+'/'+bfix+'/'+lfix+'/'+gfix+pr;}catch(e){return -1;}};"
          "window.__AMZDARK_APPLY__=function(){try{"
            "if(!document.querySelector('style.darkreader'))DarkReader.enable(%@,%@);"
@@ -1849,6 +1883,13 @@ static UIImage *ADGlyphify(UIImage *img){
         %orig;
         return;
     }
+    // Not in a hierarchy yet: ADInTabBarChain has nothing to walk, so we cannot know
+    // whether this is tab-bar artwork. Converting now is the guess that turned the
+    // cart icon white. didMoveToWindow does the same job once the chain exists.
+    if (!self.superview && !self.window) {
+        %orig;
+        return;
+    }
     @try {
         UIImage *tpl = ADGlyphify(image);
         if (tpl) {
@@ -1866,6 +1907,10 @@ static UIImage *ADGlyphify(UIImage *img){
 %hook UIButton
 - (void)setImage:(UIImage *)image forState:(UIControlState)state {
     if (!image || ADInTabBarChain(self)) {
+        %orig;
+        return;
+    }
+    if (!self.superview && !self.window) {
         %orig;
         return;
     }
