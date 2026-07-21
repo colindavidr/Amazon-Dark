@@ -342,7 +342,22 @@ static NSString *ADDarkReaderBootstrap(void){
            // looser size cap, because the heart measures 33x33 against a 32 limit and
            // was failing by a single pixel, while sbs-pill-image at 34x34 is a product
            // thumbnail that must keep its colour.
-           "var ICON=/heart|wish|favor|lists-framework|a-icon|icon-|-icon/i;"
+           "var ICON=/heart|wish|favor|lists-framework|a-icon|icon-|-icon/i;"           // collect() walks document.body's DESCENDANTS, so <html> and <body>
+           // themselves are never in els. A page that paints its own light background
+           // on body -- Amazon Pharmacy's pink -- is invisible to every per-element
+           // rule, and its inline/high-specificity value also overrides Dark Reader's
+           // sheet. Darken them explicitly. Both solid and gradient forms.
+           "try{var roots=[document.documentElement,document.body];"
+             "for(var ri=0;ri<roots.length;ri++){var be=roots[ri];if(!be)continue;"
+               "var bcs=getComputedStyle(be),bbl=lum(bcs.backgroundColor);"
+               "if(bbl!==null&&bbl>0.4){be.style.setProperty('background-color',BG,'important');lfix++;}"
+               "var bbi=bcs.backgroundImage||'';"
+               "if(bbi.indexOf('gradient')>=0){var bmx=0,bm,bre=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/g;"
+                 "while((bm=bre.exec(bbi))){var bl2=0.2126*ch(+bm[1])+0.7152*ch(+bm[2])+0.0722*ch(+bm[3]);"
+                   "if(bl2>bmx)bmx=bl2;}"
+                 "if(bmx>0.4){be.style.setProperty('background-image','none','important');"
+                   "be.style.setProperty('background-color',BG,'important');lfix++;}}}"
+           "}catch(e){}"
            "for(var i=0;i<els.length;i++){var el=els[i];"
              "var cs=getComputedStyle(el);"
              // NO LIGHT PANELS. Anything still measuring light after Dark Reader has
@@ -1959,6 +1974,7 @@ static BOOL ADIsTabBarItemish(UIView *v){
     return (strstr(n,"BottomNav") || strstr(n,"TabBarItem") ||
             strstr(n,"TabBar") || strstr(n,"NavToolbar"));
 }
+static int gTabDumpLeft = 16;   // one-shot budget, refreshed on each app launch
 static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
 static int gSwLabelFixed = 0, gSwTemplateSeen = 0, gSwTintFixed = 0;
 static char gSwSample[96] = {0};
@@ -1974,6 +1990,22 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
         // for the current tab state. Only the icon and label work needs holding back
         // here; the fill still has to be darkened like everything else.
         BOOL tabBarish = inTabBar || ADIsTabBarItemish(v);   // INHERITED, not re-derived
+        if (tabBarish && gTabDumpLeft > 0 &&
+            ([v isKindOfClass:[UIImageView class]] || [v isKindOfClass:[UIButton class]])){
+            @try {
+                UIImage *di = [v isKindOfClass:[UIImageView class]] ? ((UIImageView *)v).image
+                                                                    : ((UIButton *)v).currentImage;
+                UIColor *dt = v.tintColor; CGFloat r,g,b,a; double tl = -1;
+                if (dt && [dt getRed:&r green:&g blue:&b alpha:&a]) tl = 0.2126*r+0.7152*g+0.0722*b;
+                BOOL ownbg = (v.backgroundColor && ADIsOwnColor(v.backgroundColor));
+                UIImage *orig = di ? objc_getAssociatedObject(di, kADOrigImageKey) : nil;
+                ADLog(@"tabdump cls=%s img=%d dark=%d tmpl=%d tint=%.2f bg=%d orig=%d",
+                      object_getClassName(v), di?1:0,
+                      di?ADIsDarkGlyph(di):0, (di && ADImageIsTemplateish(di))?1:0,
+                      tl, ownbg?1:0, orig?1:0);
+                gTabDumpLeft--;
+            } @catch(...) {}
+        }
         if (tabBarish){
             @try {
                 UIImage *cur = nil;
