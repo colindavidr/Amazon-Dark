@@ -279,11 +279,20 @@ static NSString *ADFixesLiteral(void){
              "mix-blend-mode:normal !important;isolation:auto !important;}"
              "%@"
              "[style*=\\\"background-image\\\"]{filter:none !important;}"
-             // Whiten add-to-list heart glyphs at documentStart so they never
-             // flash dark. Exact classes the runtime probe named; scoped tight so
-             // a filled (coloured) heart is untouched.
-             ".puis-heart-placeholder,.lists-framework-unfilled,[class*=heart-position],"
-             "[class*=heart-placeholder]{filter:brightness(0) invert(1) !important;}"
+             // Heart circle. The button behind the heart is a light/white disc; on a
+             // dark theme it reads as a bright blob that hides the glyph. Darken it at
+             // documentStart so there is never a white flash. (The earlier
+             // brightness(0)+invert whitened the ENTIRE element -- circle and heart
+             // together -- which is exactly what created the blob.) The glyph itself is
+             // lightened by the JS pass below.
+             "[class*=heart],[class*=lists-framework],[class*=wish]"
+             "{background-color:#181a1b !important;}"
+             // Darkening blends crush their content toward black on a dark theme; the
+             // deal badges use them inline. Neutralise at documentStart so the text is
+             // legible on first paint instead of after the repair catches up.
+             "[style*=multiply],[style*=darken],[style*=color-burn],"
+             "[class*=deal] [style*=blend],[class*=Deal] [style*=blend]"
+             "{mix-blend-mode:normal !important;isolation:auto !important;}"
              "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}",
             imgBackdrop];
 }
@@ -343,7 +352,7 @@ static NSString *ADDarkReaderBootstrap(void){
            // format argument through two call sites.
            "var BG='rgb(24,26,27)';try{var hb=getComputedStyle(document.documentElement).backgroundColor;"
              "var hl=lum(hb);if(hl!==null&&hl<0.25)BG=hb;}catch(e){}"
-           "var SKIP=/star|prime|logo|flag|swatch|thumb|sponsor|pill-image|product-image|photo/i;"           // Classes the probe confirmed are monochrome UI glyphs. These get a
+           "var SKIP=/star|prime|logo|flag|swatch|thumb|sponsor|pill-image|product-image|photo|heart|wish|lists-framework/i;"           // Classes the probe confirmed are monochrome UI glyphs. These get a
            // looser size cap, because the heart measures 33x33 against a 32 limit and
            // was failing by a single pixel, while sbs-pill-image at 34x34 is a product
            // thumbnail that must keep its colour.
@@ -455,7 +464,28 @@ static NSString *ADDarkReaderBootstrap(void){
              "var fl=lum(cs.color);if(fl===null)continue;"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
-           // One-shot probe. Two builds have now been spent inferring what paints
+           // HEARTS. Two parts, kept separate so they cannot fight: darken the circle
+           // (a light background on the element or a near ancestor) and lighten the
+           // glyph by whatever actually draws it. Doing this by mechanism avoids the
+           // whole-box whitening that hid the heart behind a white disc.
+           "try{var HRT=document.querySelectorAll('[class*=heart],[class*=wish],[class*=lists-framework]');"
+             "for(var hz=0;hz<HRT.length;hz++){var he=HRT[hz];var hcs=getComputedStyle(he);"
+               // circle: darken this element's light bg, and the first light ancestor bg
+               "if(lum(hcs.backgroundColor)>0.5)he.style.setProperty('background-color',BG,'important');"
+               "var pe=he.parentElement,pd=0;"
+               "while(pe&&pd++<3){var pl=lum(getComputedStyle(pe).backgroundColor);"
+                 "if(pl!==null&&pl>0.5){pe.style.setProperty('background-color',BG,'important');break;}"
+                 "pe=pe.parentElement;}"
+               // glyph: mask -> its background-color IS the fill; img/bgimg -> invert;
+               // svg/plain -> fill/color. Never brightness(0), which flattens the box.
+               "var hmi=hcs.webkitMaskImage||hcs.maskImage;"
+               "if(hmi&&hmi!=='none'){he.style.setProperty('background-color',FG,'important');}"
+               "else if(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none')){"
+                 "he.style.setProperty('filter','invert(1)','important');}"
+               "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
+                 "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
+             "}}catch(e){}"
+           "// One-shot probe. Two builds have now been spent inferring what paints
            // these glyphs from what does NOT move. Cheaper to just ask the DOM: report
            // the first few icon-sized elements and which mechanism draws each, so the
            // next change targets a known selector instead of a guess.
@@ -531,7 +561,7 @@ static NSString *ADDarkReaderBootstrap(void){
          // Re-run the repair as the page fills in (carousels, lazy tiles), debounced
          // so a busy DOM cannot turn this into a hot loop.
          "try{var _t=null;new MutationObserver(function(){clearTimeout(_t);"
-           "_t=setTimeout(function(){try{window.__AMZDARK_FIXCONTRAST__();}catch(e){}},400);})"
+           "_t=setTimeout(function(){try{window.__AMZDARK_FIXCONTRAST__();}catch(e){}},150);})"
            ".observe(document.documentElement,{childList:true,subtree:true});}catch(e){}"
          "window.__AMZDARK_APPLY__();"
          // Re-apply when the page is restored from the back-forward cache (returning
@@ -1138,17 +1168,24 @@ static void ADApplyBarTint(UIView *container, BOOL selected){
         %orig;
         return;
     }
+    // Tab bar FIRST, before the nil/own guards below. The blue/white flash was a
+    // fight: we set a tab icon blue, Amazon reset its tint (often to nil -> reverts to
+    // the bar's inherited near-white), our next sweep re-blued it. Overriding every
+    // assignment here -- real colour, nil, or our own -- means Amazon's value never
+    // lands, so there is nothing to flash against.
     @try {
-        if (ADInTabBarChain(self)){
-            // Capture Amazon's accent once so our blue matches theirs exactly, and
-            // leave the bar's tint untransformed. Tab icons are coloured explicitly by
-            // selection (ADApplyBarTint); lightening the inherited tint here is what
-            // turned every tab white.
-            CGFloat r,g,b,a;
-            if (!gAmazonBlue && [color getRed:&r green:&g blue:&b alpha:&a]){
-                CGFloat mx = MAX(r,MAX(g,b)), mn = MIN(r,MIN(g,b));
-                if ((mx-mn) > 0.15 && b >= r*0.9)      // a saturated blue-ish accent
-                    gAmazonBlue = ADMarkOwnColor([UIColor colorWithRed:r green:g blue:b alpha:1.0]);
+        if (ADRecolorOn() && !ADIsWebKitOwned(self) && ADInTabBarChain(self)){
+            if (color && !ADIsOwnColor(color)){
+                CGFloat r,g,b,a;
+                if (!gAmazonBlue && [color getRed:&r green:&g blue:&b alpha:&a]){
+                    CGFloat mx = MAX(r,MAX(g,b)), mn = MIN(r,MIN(g,b));
+                    if ((mx-mn) > 0.15 && b >= r*0.9)
+                        gAmazonBlue = ADMarkOwnColor([UIColor colorWithRed:r green:g blue:b alpha:1.0]);
+                }
+            }
+            if (!ADIsOwnColor(color)){
+                %orig(ADViewIsSelectedInBar(self) ? ADBarWhite() : ADBarBlue());
+                return;
             }
             %orig;
             return;
@@ -2085,8 +2122,27 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                 gTabDumpLeft--;
             } @catch(...) {}
         }
+        // Thin non-icon bar views: candidates for the selection indicator the user
+        // wants white. Report class/size/background so it can be targeted exactly.
+        if (tabBarish && gTabDumpLeft > 0 &&
+            ![v isKindOfClass:[UIImageView class]] && ![v isKindOfClass:[UIButton class]]){
+            @try {
+                CGFloat hh = v.bounds.size.height, ww = v.bounds.size.width;
+                if (hh > 0 && hh < 8 && ww > 12){
+                    UIColor *bc = v.backgroundColor; double bl = -1; CGFloat br,bgc,bb,ba;
+                    if (bc && [bc getRed:&br green:&bgc blue:&bb alpha:&ba]) bl = 0.2126*br+0.7152*bgc+0.0722*bb;
+                    ADLog(@"tabline cls=%s w=%.0f h=%.1f bg=%.2f", object_getClassName(v), ww, hh, bl);
+                    gTabDumpLeft--;
+                }
+            } @catch(...) {}
+        }
+        if (tabBarish){
+            const char *scn = object_getClassName(v);
+            if (scn && strstr(scn, "BarBackgroundShadow"))
+                ((UIView *)v).backgroundColor = ADBarWhite();   // whiten the top hairline
+        }
         UIColor *bg = v.backgroundColor;
-        if (bg && !ADIsModifiedUIColor(bg)) {
+        if (bg && !ADIsOwnColor(bg) && !ADIsModifiedUIColor(bg)) {
             // Assign the TRANSFORMED colour, never the same object back.
             //
             // The old code did `v.backgroundColor = bg` and relied on our UIView hook
