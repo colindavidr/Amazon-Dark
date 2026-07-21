@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.31.0"
+#define AD_VERSION "v5.32.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -562,9 +562,30 @@ static NSString *ADDarkReaderBootstrap(void){
                  "ht.push(hk+'.'+(hc||'').toString().split(' ')[0].slice(0,20)"
                    "+'@'+Math.round(hr.width)+'x'+Math.round(hr.height)"
                    "+'/f:'+(hcs.fill||'-')+'/c:'+hcs.color);}}catch(e){}"
+             // Full subtree of the first heart container, so we stop inferring which
+             // node draws the glyph. flt= reveals whether our invert actually applied.
+             "var htree='';try{var HB=document.querySelector('[class*=heart],[class*=wish],[class*=lists-framework]');"
+               "if(HB){var top=HB,up=0;"
+                 "while(top.parentElement&&up++<3){var pp2=top.parentElement;"
+                   "var pr3=pp2.getBoundingClientRect();if(pr3.width>48||pr3.height>48)break;top=pp2;}"
+                 "var stk=[top],hd=[],gd=0;"
+                 "while(stk.length&&hd.length<10&&gd++<200){var nd=stk.shift();"
+                   "var ncs=getComputedStyle(nd),nrr=nd.getBoundingClientRect();"
+                   "var nbb=getComputedStyle(nd,'::before');"
+                   "var cn3=nd.className;if(cn3&&cn3.baseVal!==undefined)cn3=cn3.baseVal;"
+                   "hd.push(nd.tagName.toLowerCase()+'.'+String(cn3||'').split(' ')[0].slice(0,18)"
+                     "+'@'+Math.round(nrr.width)+'x'+Math.round(nrr.height)"
+                     "+'|bg='+ncs.backgroundColor.replace(/ /g,'')"
+                     "+'|bgi='+(ncs.backgroundImage==='none'?'-':'Y')"
+                     "+'|mask='+(((ncs.webkitMaskImage||ncs.maskImage||'none')==='none')?'-':'Y')"
+                     "+'|bef='+((nbb&&nbb.content&&nbb.content!=='none'&&nbb.content!=='normal')?'Y':'-')"
+                     "+'|flt='+ncs.filter);"
+                   "for(var ci2=0;ci2<nd.children.length;ci2++)stk.push(nd.children[ci2]);}"
+                 "htree=' HEARTTREE='+hd.join(' ~ ');}"
+             "}catch(e){}"
              "pr=(acc.length?(' probe='+acc.join(' ')):' probe=none')"
                "+(lt.length?(' light='+lt.join(' ')):'')"
-               "+(ht.length?(' HEART='+ht.join(' ')):'');}"
+               "+(ht.length?(' HEART='+ht.join(' ')):'')+htree;}"
            "}catch(e){pr=' probeERR';}"
            "return n+'/'+bfix+'/'+lfix+'/'+gfix+pr;}catch(e){return -1;}};"
          "window.__AMZDARK_APPLY__=function(){try{"
@@ -2242,7 +2263,9 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                 if (hh > 0 && hh < 8 && ww > 12){
                     UIColor *bc = v.backgroundColor; double bl = -1; CGFloat br,bgc,bb,ba;
                     if (bc && [bc getRed:&br green:&bgc blue:&bb alpha:&ba]) bl = 0.2126*br+0.7152*bgc+0.0722*bb;
-                    ADLog(@"tabline cls=%s w=%.0f h=%.1f bg=%.2f", object_getClassName(v), ww, hh, bl);
+                    ADLog(@"tabline cls=%s w=%.0f h=%.1f bg=%.2f tagged=%d inchain=%d",
+                          object_getClassName(v), ww, hh, bl,
+                          ADIsTaggedIndicator(v) ? 1 : 0, ADInTabBarChain(v) ? 1 : 0);
                     gTabDumpLeft--;
                 }
             } @catch(...) {}
