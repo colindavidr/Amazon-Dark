@@ -279,6 +279,11 @@ static NSString *ADFixesLiteral(void){
              "mix-blend-mode:normal !important;isolation:auto !important;}"
              "%@"
              "[style*=\\\"background-image\\\"]{filter:none !important;}"
+             // Whiten add-to-list heart glyphs at documentStart so they never
+             // flash dark. Exact classes the runtime probe named; scoped tight so
+             // a filled (coloured) heart is untouched.
+             ".puis-heart-placeholder,.lists-framework-unfilled,[class*=heart-position],"
+             "[class*=heart-placeholder]{filter:brightness(0) invert(1) !important;}"
              "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}",
             imgBackdrop];
 }
@@ -1031,6 +1036,7 @@ static inline UIColor *ADMarkOwnColor(UIColor *c){
 // catalogue reports UIImageRenderingModeAutomatic and is resolved to template at
 // draw time, so the AlwaysTemplate test walked straight past the app's own icons.
 static const void *kADOrigImageKey = &kADOrigImageKey;
+static UIColor *gAmazonBlue = nil;   // Amazon's own tab accent, captured live
 static BOOL ADIsTabBarItemish(UIView *v);
 // Walk UP. ADIsTabBarItemish names CONTAINER classes, so the image view that actually
 // holds the cart glyph never matches on its own -- only an ancestor does. Declared
@@ -1052,6 +1058,46 @@ static inline BOOL ADImageIsTemplateish(UIImage *im){
     if (cg && (CGImageIsMask(cg) || CGImageGetAlphaInfo(cg) == kCGImageAlphaOnly)) return YES;
     if (im.symbolConfiguration != nil) return YES;   // SF Symbols are always template
     return NO;
+}
+
+// ─── tab bar colouring ──────────────────────────────────────────────────────────
+// The bar wants COLOUR, not our monochrome foreground: every tab in Amazon's accent
+// blue, the selected one white. The generic setTintColor hook was lightening Amazon's
+// blue to ~0.90 (near white), which is exactly why every tab went white. We capture
+// Amazon's own accent so the shade matches, stop transforming bar tints, and colour
+// each icon explicitly by selection state.
+static UIColor *ADBarBlue(void){
+    if (gAmazonBlue) return gAmazonBlue;
+    return ADColorFromHex("#00A8E1");            // marked-own fallback
+}
+static UIColor *ADBarWhite(void){ return ADColorFromHex(gP.fgHex); }   // marked-own ~white
+static BOOL ADViewIsSelectedInBar(UIView *v){
+    int d = 0;
+    while (v && d++ < 12){
+        if ([v isKindOfClass:[UIControl class]] && ((UIControl *)v).selected) return YES;
+        v = v.superview;
+    }
+    return NO;
+}
+static void ADTintBarIcon(UIImageView *iv, BOOL selected){
+    @try {
+        UIImage *img = iv.image;
+        if (!img) return;
+        // Templatise so the tint takes. A bitmap icon ignores tintColor, which is why
+        // the dark bitmaps stayed dark; a template renders entirely in its tint.
+        if (!ADImageIsTemplateish(img)){
+            UIImage *tpl = [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+            if (tpl){ ADMarkModifiedImage(tpl); iv.image = tpl; }
+        }
+        ((UIView *)iv).tintColor = selected ? ADBarWhite() : ADBarBlue();
+    } @catch(...) {}
+}
+static void ADApplyBarTint(UIView *container, BOOL selected){
+    if (!container) return;
+    @try {
+        if ([container isKindOfClass:[UIImageView class]]) ADTintBarIcon((UIImageView *)container, selected);
+        for (UIView *s in container.subviews) ADApplyBarTint(s, selected);
+    } @catch(...) {}
 }
 
 // ─── UIView / UILabel / controls ──────────────────────────────────────────────────
@@ -1093,6 +1139,20 @@ static inline BOOL ADImageIsTemplateish(UIImage *im){
         return;
     }
     @try {
+        if (ADInTabBarChain(self)){
+            // Capture Amazon's accent once so our blue matches theirs exactly, and
+            // leave the bar's tint untransformed. Tab icons are coloured explicitly by
+            // selection (ADApplyBarTint); lightening the inherited tint here is what
+            // turned every tab white.
+            CGFloat r,g,b,a;
+            if (!gAmazonBlue && [color getRed:&r green:&g blue:&b alpha:&a]){
+                CGFloat mx = MAX(r,MAX(g,b)), mn = MIN(r,MIN(g,b));
+                if ((mx-mn) > 0.15 && b >= r*0.9)      // a saturated blue-ish accent
+                    gAmazonBlue = ADMarkOwnColor([UIColor colorWithRed:r green:g blue:b alpha:1.0]);
+            }
+            %orig;
+            return;
+        }
         UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
         if (!m) m = color;
         %orig(m);
@@ -1721,10 +1781,13 @@ static void ADRunProbe(void){
         // tmpl=0) rendering invisibly on the dark bar. Convert them like any glyph,
         // but skip the backdrop and the tint pin so the bar's own tint -- selected
         // blue, unselected grey -- still drives their colour.
-        BOOL inBar = ADInTabBarChain(self);
+        if (ADInTabBarChain(self)){
+            ADTintBarIcon(self, ADViewIsSelectedInBar(self));
+            return;                                      // bar icons are fully handled
+        }
 
         // (1) Backdrop for TRANSPARENT images — cheap, always-on-when-enabled.
-        if (!inBar && gP.imageBackdrop){
+        if (gP.imageBackdrop){
             UIImage *img = self.image;
             if (img && img.CGImage){
                 CGImageAlphaInfo a = CGImageGetAlphaInfo(img.CGImage);
@@ -1741,7 +1804,7 @@ static void ADRunProbe(void){
         {
             UIImage *tpl = ADGlyphify(self.image);
             if (tpl){
-                if (!inBar) ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+                ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
                 self.image = tpl;
             }
         }
@@ -1924,10 +1987,14 @@ static UIImage *ADGlyphify(UIImage *img){
         // what lets the selected state colour it blue. Pinning fg is what turned the
         // cart white -- that was the real defect behind four builds of gating, not the
         // conversion.
-        BOOL inBar = ADInTabBarChain(self);
+        if (ADInTabBarChain(self)) {
+            %orig;                                       // install the artwork
+            ADTintBarIcon(self, ADViewIsSelectedInBar(self));  // then templatise + colour
+            return;
+        }
         UIImage *tpl = ADGlyphify(image);
         if (tpl) {
-            if (!inBar) ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+            ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
             %orig(tpl);
             return;
         }
@@ -1949,15 +2016,28 @@ static UIImage *ADGlyphify(UIImage *img){
         return;
     }
     @try {
-        BOOL inBar = ADInTabBarChain(self);
+        if (ADInTabBarChain(self)) {
+            %orig(image, state);
+            ADApplyBarTint(self, ADViewIsSelectedInBar(self));
+            return;
+        }
         UIImage *tpl = ADGlyphify(image);
         if (tpl) {
-            if (!inBar) ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+            ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
             %orig(tpl, state);
             return;
         }
     } @catch(...) {}
     %orig;
+}
+%end
+
+// Selection changes after the launch timer stops, so a tap must re-colour the tab
+// itself. setSelected: is the exact event; ADApplyBarTint reads the NEW value.
+%hook UIControl
+- (void)setSelected:(BOOL)selected {
+    %orig;
+    @try { if (ADRecolorOn() && ADInTabBarChain(self)) ADApplyBarTint(self, selected); } @catch(...) {}
 }
 %end
 
@@ -1997,10 +2077,11 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                 if (dt && [dt getRed:&r green:&g blue:&b alpha:&a]) tl = 0.2126*r+0.7152*g+0.0722*b;
                 BOOL ownbg = (v.backgroundColor && ADIsOwnColor(v.backgroundColor));
                 UIImage *orig = di ? objc_getAssociatedObject(di, kADOrigImageKey) : nil;
-                ADLog(@"tabdump cls=%s img=%d dark=%d tmpl=%d tint=%.2f bg=%d orig=%d",
+                ADLog(@"tabdump cls=%s img=%d dark=%d tmpl=%d tint=%.2f rgb=%.2f,%.2f,%.2f sel=%d bg=%d orig=%d",
                       object_getClassName(v), di?1:0,
                       di?ADIsDarkGlyph(di):0, (di && ADImageIsTemplateish(di))?1:0,
-                      tl, ownbg?1:0, orig?1:0);
+                      tl, (tl>=0?r:0),(tl>=0?g:0),(tl>=0?b:0),
+                      ADViewIsSelectedInBar(v)?1:0, ownbg?1:0, orig?1:0);
                 gTabDumpLeft--;
             } @catch(...) {}
         }
@@ -2033,6 +2114,9 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
             @try {
                 UIImageView *iv = (UIImageView *)v;
                 if (iv.image) gSwImgSeen++;
+                if (tabBarish){
+                    ADTintBarIcon(iv, ADViewIsSelectedInBar(iv));
+                } else {
                 if (iv.image && ADImageIsTemplateish(iv.image)){
                     gSwTemplateSeen++;
                     UIColor *tint = iv.tintColor;
@@ -2056,13 +2140,16 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                 UIImage *tpl = ADGlyphify(((UIImageView *)v).image);
                 if (tpl) gSwGlyphFixed++;
                 if (tpl){
-                    if (!tabBarish) ((UIView *)v).tintColor = ADColorFromHex(gP.fgHex);
+                    ((UIView *)v).tintColor = ADColorFromHex(gP.fgHex);
                     ((UIImageView *)v).image = tpl;
+                }
                 }
             } @catch(...) {}
         } else if ([v isKindOfClass:[UIButton class]]){
             @try {
                 UIButton *b = (UIButton *)v;
+                if (tabBarish){ ADApplyBarTint(b, ADViewIsSelectedInBar(b)); }
+                else {
                 UIImage *cur = b.currentImage;
                 if (cur && ADImageIsTemplateish(cur)){
                     gSwTemplateSeen++;
@@ -2076,8 +2163,9 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                 }
                 UIImage *tpl = ADGlyphify(cur);
                 if (tpl){
-                    if (!tabBarish) ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
+                    ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
                     [b setImage:tpl forState:UIControlStateNormal];
+                }
                 }
             } @catch(...) {}
         }
