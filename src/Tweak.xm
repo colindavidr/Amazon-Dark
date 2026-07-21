@@ -334,9 +334,39 @@ static NSString *ADDarkReaderBootstrap(void){
                // so anything Amazon builds inside one is unreachable from the document.
                "if(e.shadowRoot&&depth<4&&out.length<6000)collect(e.shadowRoot,out,depth+1);}"
              "}catch(e){}return out;}"
-           "var els=collect(document.body,[],0),n=0,bfix=0;"
+           "var els=collect(document.body,[],0),n=0,bfix=0,lfix=0,gfix=0;"           // Read the themed background off <html> rather than plumbing another
+           // format argument through two call sites.
+           "var BG='rgb(24,26,27)';try{var hb=getComputedStyle(document.documentElement).backgroundColor;"
+             "var hl=lum(hb);if(hl!==null&&hl<0.25)BG=hb;}catch(e){}"
+           "var SKIP=/star|prime|logo|flag|swatch|thumb|sponsor/i;"
            "for(var i=0;i<els.length;i++){var el=els[i];"
              "var cs=getComputedStyle(el);"
+             // NO LIGHT PANELS. Anything still measuring light after Dark Reader has
+             // run is a miss -- a gradient it could not parse, a shadow subtree, an
+             // inline style it skipped. Correct by COMPUTED value so the mechanism
+             // does not matter. els is in document order, so an ancestor is darkened
+             // before its children are contrast-checked against it.
+             "if(lfix<300){var pl=lum(cs.backgroundColor);"
+               "if(pl!==null&&pl>0.55){el.style.setProperty('background-color',BG,'important');lfix++;}}"
+             // SPRITE AND <img> GLYPHS -- the heart and the filter control.
+             // ignoreImageAnalysis:['*'] switches off Dark Reader's dark-image
+             // inversion (added in v5.4.0 to protect product photos) and the injected
+             // img{filter:none} rule blocks it a second time, so a monochrome icon
+             // shipped as an <img> or CSS sprite has nothing acting on it at all.
+             // Forcing it white is safe at glyph size and beats measuring pixels,
+             // which cannot work here: these come from m.media-amazon.com and would
+             // taint a canvas. Inline !important outranks stylesheet !important, so
+             // this wins over our own img{filter:none}.
+             "if(gfix<80&&!el.__adGlyph){try{var gr=el.getBoundingClientRect();"
+               "var cn2=el.className;if(cn2&&cn2.baseVal!==undefined)cn2=cn2.baseVal;"
+               "cn2=(cn2||'').toString();"
+               "if(gr.width>5&&gr.width<=28&&gr.height>5&&gr.height<=28&&!SKIP.test(cn2)"
+                 "&&!el.textContent.trim()){"
+                 "var isI=el.tagName.toLowerCase()==='img';"
+                 "var hasB=cs.backgroundImage&&cs.backgroundImage!=='none';"
+                 "if(isI||hasB){el.style.setProperty('filter','brightness(0) invert(1)','important');"
+                   "el.__adGlyph=1;gfix++;}}"
+             "}catch(e){}}"
              "if(BAD[cs.mixBlendMode]&&bfix<800){"
                "el.style.setProperty('mix-blend-mode','normal','important');"
                "el.style.setProperty('isolation','auto','important');bfix++;}"
@@ -384,7 +414,10 @@ static NSString *ADDarkReaderBootstrap(void){
            // these glyphs from what does NOT move. Cheaper to just ask the DOM: report
            // the first few icon-sized elements and which mechanism draws each, so the
            // next change targets a known selector instead of a guess.
-           "var pr='';try{if(!window.__AMZDARK_PROBED__){window.__AMZDARK_PROBED__=1;"
+           // The one-shot flag was the bug: __AMZDARK_APPLY__ calls this once at
+           // bootstrap and DISCARDS the result, so the probe was always spent before
+           // the first logged invocation. Compute once, cache, return every time.
+           "var pr='';try{if(window.__AMZDARK_PROBE_STR__===undefined){"
              "var seen={},acc=[];"
              "for(var q=0;q<els.length&&acc.length<8;q++){var pe=els[q];"
                "var rc=pe.getBoundingClientRect();"
@@ -403,8 +436,18 @@ static NSString *ADDarkReaderBootstrap(void){
                "cn=(cn||'').toString().split(' ')[0].slice(0,22);"
                "var k=kind+'.'+cn;if(seen[k])continue;seen[k]=1;"
                "acc.push(k+'@'+Math.round(rc.width)+'x'+Math.round(rc.height)+'/'+pcs.color);}"
-             "pr=acc.length?(' probe='+acc.join(' ')):' probe=none';}}catch(e){pr=' probeERR';}"
-           "return n+'/'+bfix+pr;}catch(e){return -1;}};"
+             // also name whatever is still LIGHT, which is what the Alexa card is
+             "var lt=[];for(var w=0;w<els.length&&lt.length<3;w++){var le=els[w];"
+               "var lcs=getComputedStyle(le),ll=lum(lcs.backgroundColor);"
+               "if(ll===null||ll<=0.55)continue;var lr=le.getBoundingClientRect();"
+               "if(lr.width<60||lr.height<20)continue;"
+               "var lc=le.className;if(lc&&lc.baseVal!==undefined)lc=lc.baseVal;"
+               "lt.push(le.tagName.toLowerCase()+'.'+(lc||'').toString().split(' ')[0].slice(0,18)"
+                 "+'@'+Math.round(lr.width)+'x'+Math.round(lr.height));}"
+             "window.__AMZDARK_PROBE_STR__=(acc.length?(' probe='+acc.join(' ')):' probe=none')"
+               "+(lt.length?(' light='+lt.join(' ')):'');}"
+           "pr=window.__AMZDARK_PROBE_STR__||'';}catch(e){pr=' probeERR';}"
+           "return n+'/'+bfix+'/'+lfix+'/'+gfix+pr;}catch(e){return -1;}};"
          "window.__AMZDARK_APPLY__=function(){try{"
            "if(!document.querySelector('style.darkreader'))DarkReader.enable(%@,%@);"
            "window.__AMZDARK_FIXCONTRAST__();"
@@ -1744,6 +1787,15 @@ static NSDictionary *ADRecolorTextAttrs(NSDictionary *attrs){
 // Results are cached per UIImage (checked-and-not-a-glyph is remembered too), so a
 // given image is analysed at most once no matter how often it is re-assigned during
 // scrolling.
+static BOOL ADIsTabBarItemish(UIView *v);
+// Walk UP. ADIsTabBarItemish names CONTAINER classes, so the image view that
+// actually holds the cart glyph never matches on its own -- only an ancestor does.
+static BOOL ADInTabBarChain(UIView *v){
+    int d = 0;
+    while (v && d++ < 12){ if (ADIsTabBarItemish(v)) return YES; v = v.superview; }
+    return NO;
+}
+
 static const void *kADGlyphChecked = &kADGlyphChecked;
 
 static UIImage *ADGlyphify(UIImage *img){
@@ -1766,7 +1818,7 @@ static UIImage *ADGlyphify(UIImage *img){
 
 %hook UIImageView
 - (void)setImage:(UIImage *)image {
-    if (!image || ADIsWebKitOwned(self)) {
+    if (!image || ADIsWebKitOwned(self) || ADInTabBarChain(self)) {
         %orig;
         return;
     }
@@ -1786,7 +1838,7 @@ static UIImage *ADGlyphify(UIImage *img){
 // the filters control, the recent-search rows.
 %hook UIButton
 - (void)setImage:(UIImage *)image forState:(UIControlState)state {
-    if (!image) {
+    if (!image || ADInTabBarChain(self)) {
         %orig;
         return;
     }
