@@ -393,13 +393,27 @@ static NSString *ADDarkReaderBootstrap(void){
 // creating one that did. Removed.
 //
 // Now: if the stylesheet is present the page is themed and we touch nothing.
+// LIGHT: re-apply. Skipping DarkReader.enable() when the page is already themed is
+// what stopped the white flashing in v5.5.1 and must stay — but the REPAIR passes
+// must not inherit that early return.
+//
+// They did, and it made three builds' worth of work inert. The SVG fill fix, the
+// contrast lifting and the shadow-DOM traversal all live inside
+// __AMZDARK_FIXCONTRAST__, and this function returned before reaching it whenever
+// style.darkreader was present. On the search pane — which IS themed, its
+// recent-search text being correctly light — the native burst therefore did nothing
+// at all, which is exactly why those icons and labels never changed.
+//
+// So: enable() stays conditional, the repair runs every time. It is idempotent
+// (it only rewrites values that currently fail) and cheap on a settled page.
 static NSString *ADDarkReaderReapply(void){
     return [NSString stringWithFormat:
         @"(function(){try{"
-         "if(!(window.DarkReader&&DarkReader.enable))return;"
-         "if(document.querySelector('style.darkreader'))return;"   // themed: leave alone
-         "DarkReader.enable(%@,%@);"
-         "}catch(e){}})();",
+         "if(!(window.DarkReader&&DarkReader.enable))return 'noDR';"
+         "if(!document.querySelector('style.darkreader'))DarkReader.enable(%@,%@);"
+         "if(window.__AMZDARK_FIXCONTRAST__)return ''+window.__AMZDARK_FIXCONTRAST__();"
+         "return 'nofix';"
+         "}catch(e){return 'err';}})();",
         ADThemeLiteral(), ADFixesLiteral()];
 }
 
@@ -408,7 +422,26 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
     @try {
         // Lightweight re-apply; the heavy engine arrives via the documentStart userscript.
         NSString *js = ADDarkReaderReapply();
-        if (js.length) [wv evaluateJavaScript:js completionHandler:nil];
+        if (js.length){
+            [wv evaluateJavaScript:js completionHandler:^(id r, NSError *e){
+                @try {
+                    if (![r isKindOfClass:[NSString class]]) return;
+                    NSString *res = (NSString *)r;
+                    // 'n/bfix' = text colours lifted / blend modes neutralised.
+                    // 'nofix'  = the repair function is not defined in this document.
+                    // Deduped per URL+result so a settled page cannot spam the log.
+                    static NSMutableSet *seenFix = nil;
+                    if (!seenFix) seenFix = [NSMutableSet set];
+                    NSString *u2 = wv.URL.absoluteString ?: @"(none)";
+                    if (u2.length > 60) u2 = [u2 substringToIndex:60];
+                    NSString *k = [NSString stringWithFormat:@"%@|%@", u2, res];
+                    if (![seenFix containsObject:k]){
+                        [seenFix addObject:k];
+                        ADLog(@"repair %@ -> %@", u2, res);
+                    }
+                } @catch(...) {}
+            }];
+        }
 
         // Name the page once per URL. Tells us which surfaces are actually web —
         // a tab that never shows up here is native and needs a different fix.
@@ -1703,6 +1736,7 @@ static BOOL ADIsTabBarItemish(UIView *v){
     return (strstr(n,"BottomNav") || strstr(n,"TabBarItem") ||
             strstr(n,"TabBar") || strstr(n,"NavToolbar"));
 }
+static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
 static void ADSweepViewTree(UIView *v, int depth){
     if (!v || depth > 60) return;
     @try {
@@ -1732,9 +1766,12 @@ static void ADSweepViewTree(UIView *v, int depth){
         // on device, the search-pane X and history glyphs were still near-black under
         // v5.14.0, which means no setter path reached them. ADGlyphify caches both
         // outcomes, so a view swept repeatedly costs a dictionary lookup.
+        gSwViews++;
         if ([v isKindOfClass:[UIImageView class]]){
             @try {
+                if (((UIImageView *)v).image) gSwImgSeen++;
                 UIImage *tpl = ADGlyphify(((UIImageView *)v).image);
+                if (tpl) gSwGlyphFixed++;
                 if (tpl){
                     ((UIView *)v).tintColor = ADColorFromHex(gP.fgHex);
                     ((UIImageView *)v).image = tpl;
@@ -1754,6 +1791,11 @@ static void ADSweepViewTree(UIView *v, int depth){
         if ([v isKindOfClass:[UILabel class]]){
             UILabel *l = (UILabel *)v;
             UIColor *tc = l.textColor;
+            @try {
+                CGFloat rr,gg,bb,aa;
+                if (tc && [tc getRed:&rr green:&gg blue:&bb alpha:&aa] &&
+                    (0.2126*rr+0.7152*gg+0.0722*bb) < 0.30) gSwDarkLabels++;
+            } @catch(...) {}
             if (tc && !ADIsModifiedUIColor(tc)) {
                 UIColor *mt = ADModifyUIColor(tc, ADColorRoleForeground);
                 if (mt) l.textColor = mt;
@@ -1791,10 +1833,16 @@ static void ADSweepViewTree(UIView *v, int depth){
 static void ADSweepAllWindows(void){
     if (!ADRecolorOn()) return;
     @try {
+        int nwin = 0;
+        gSwViews = gSwImgSeen = gSwGlyphFixed = gSwDarkLabels = 0;
         for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
             if (![sc isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *w in ((UIWindowScene *)sc).windows) ADSweepViewTree(w, 0);
+            for (UIWindow *w in ((UIWindowScene *)sc).windows){ nwin++; ADSweepViewTree(w, 0); }
         }
+        static NSString *last = nil;
+        NSString *now = [NSString stringWithFormat:@"win=%d views=%d img=%d glyphFixed=%d darkLabels=%d",
+                         nwin, gSwViews, gSwImgSeen, gSwGlyphFixed, gSwDarkLabels];
+        if (!last || ![last isEqualToString:now]){ last = now; ADLog(@"sweep %@", now); }
     } @catch(...) {}
 }
 
@@ -1942,7 +1990,7 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
 %ctor {
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
-    ADRaw("[AmazonDark] v5.15.0 init (DarkReader web + native colour engine)");
+    ADRaw("[AmazonDark] v5.16.0 init (DarkReader web + native colour engine)");
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
