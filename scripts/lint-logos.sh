@@ -85,6 +85,25 @@ for h in src/*.h; do
     fi
 done
 
+
+# ── quote-before-comment guard ────────────────────────────────────────────────
+# A stray " in front of a // comment turns that comment into an unterminated
+# string literal. Two consecutive builds died on exactly this, and it is invisible
+# to every other check here: Logos preprocesses it happily, the lint regexes above
+# pass, and it only surfaces as a clang "expected ']'" pointing at a bare quote.
+# The signature is unambiguous - a string that opens and immediately contains a
+# comment marker is never intentional in this codebase.
+for f in "${files[@]}"; do
+    [ -f "$f" ] || continue
+    stray=$(grep -nE '^[[:space:]]*"//' "$f" || true)
+    if [ -n "$stray" ]; then
+        echo "  $f: stray quote before a // comment (quote-before-comment) —"
+        echo "$stray" | sed 's/^/      /'
+        echo "      This opens an unterminated string literal. Delete the leading \"."
+        fail=1
+    fi
+done
+
 if [ "$fail" -ne 0 ]; then
     cat <<'EOF'
 

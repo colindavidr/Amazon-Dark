@@ -485,7 +485,7 @@ static NSString *ADDarkReaderBootstrap(void){
                "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
                  "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
              "}}catch(e){}"
-           "// One-shot probe. Two builds have now been spent inferring what paints
+           // One-shot probe. Two builds have now been spent inferring what paints
            // these glyphs from what does NOT move. Cheaper to just ask the DOM: report
            // the first few icon-sized elements and which mechanism draws each, so the
            // next change targets a known selector instead of a guess.
