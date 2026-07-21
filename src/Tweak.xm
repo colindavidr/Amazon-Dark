@@ -360,8 +360,15 @@ static NSString *ADDarkReaderBootstrap(void){
              "if(gfix<80&&!el.__adGlyph){try{var gr=el.getBoundingClientRect();"
                "var cn2=el.className;if(cn2&&cn2.baseVal!==undefined)cn2=cn2.baseVal;"
                "cn2=(cn2||'').toString();"
-               "if(gr.width>5&&gr.width<=28&&gr.height>5&&gr.height<=28&&!SKIP.test(cn2)"
-                 "&&!el.textContent.trim()){"
+               // textContent was the wrong test. Amazon's standard icon markup nests a
+               // visually-hidden label -- <span class=a-icon><span class=a-icon-alt>Add
+               // to list</span></span> -- so textContent is non-empty and the guard
+               // rejected precisely the markup being targeted. That is why the filter
+               // control (no nested label) went white and the heart did not. Only the
+               // element's OWN direct text nodes should disqualify it.
+               "var ot=false;for(var z=0;z<el.childNodes.length;z++){var nz=el.childNodes[z];"
+                 "if(nz.nodeType===3&&nz.nodeValue&&nz.nodeValue.trim()){ot=true;break;}}"
+               "if(gr.width>5&&gr.width<=32&&gr.height>5&&gr.height<=32&&!SKIP.test(cn2)&&!ot){"
                  "var isI=el.tagName.toLowerCase()==='img';"
                  "var hasB=cs.backgroundImage&&cs.backgroundImage!=='none';"
                  "if(isI||hasB){el.style.setProperty('filter','brightness(0) invert(1)','important');"
@@ -417,7 +424,12 @@ static NSString *ADDarkReaderBootstrap(void){
            // The one-shot flag was the bug: __AMZDARK_APPLY__ calls this once at
            // bootstrap and DISCARDS the result, so the probe was always spent before
            // the first logged invocation. Compute once, cache, return every time.
-           "var pr='';try{if(window.__AMZDARK_PROBE_STR__===undefined){"
+           // Caching fixed the "consumed at bootstrap" bug but introduced its twin:
+           // the bootstrap call runs against a near-empty DOM, found nothing, and
+           // cached THAT. Hence probe=none while gfix was busy matching elements.
+           // Only cache a result that actually found something; keep retrying until
+           // one does.
+           "var pr='';try{if(!window.__AMZDARK_PROBE_STR__){"
              "var seen={},acc=[];"
              "for(var q=0;q<els.length&&acc.length<8;q++){var pe=els[q];"
                "var rc=pe.getBoundingClientRect();"
@@ -439,14 +451,19 @@ static NSString *ADDarkReaderBootstrap(void){
              // also name whatever is still LIGHT, which is what the Alexa card is
              "var lt=[];for(var w=0;w<els.length&&lt.length<3;w++){var le=els[w];"
                "var lcs=getComputedStyle(le),ll=lum(lcs.backgroundColor);"
-               "if(ll===null||ll<=0.55)continue;var lr=le.getBoundingClientRect();"
+               // lfix has read 0 on every line, so whatever is still light is not a
+               // backgroundColor. A gradient is the obvious candidate and is invisible
+               // to lum(), so report those too rather than keep guessing at the pane.
+               "var lgi=lcs.backgroundImage||'';var lgr=lgi.indexOf('gradient')>=0;"
+               "if(!lgr&&(ll===null||ll<=0.55))continue;var lr=le.getBoundingClientRect();"
                "if(lr.width<60||lr.height<20)continue;"
                "var lc=le.className;if(lc&&lc.baseVal!==undefined)lc=lc.baseVal;"
                "lt.push(le.tagName.toLowerCase()+'.'+(lc||'').toString().split(' ')[0].slice(0,18)"
                  "+'@'+Math.round(lr.width)+'x'+Math.round(lr.height));}"
-             "window.__AMZDARK_PROBE_STR__=(acc.length?(' probe='+acc.join(' ')):' probe=none')"
-               "+(lt.length?(' light='+lt.join(' ')):'');}"
-           "pr=window.__AMZDARK_PROBE_STR__||'';}catch(e){pr=' probeERR';}"
+             "var ps=(acc.length?(' probe='+acc.join(' ')):'')"
+               "+(lt.length?(' light='+lt.join(' ')):'');"
+             "if(ps)window.__AMZDARK_PROBE_STR__=ps;}"
+           "pr=window.__AMZDARK_PROBE_STR__||' probe=none';}catch(e){pr=' probeERR';}"
            "return n+'/'+bfix+'/'+lfix+'/'+gfix+pr;}catch(e){return -1;}};"
          "window.__AMZDARK_APPLY__=function(){try{"
            "if(!document.querySelector('style.darkreader'))DarkReader.enable(%@,%@);"
@@ -959,6 +976,19 @@ static inline UIColor *ADMarkOwnColor(UIColor *c){
 // renderingMode alone is not enough: an asset marked "Template Image" in the
 // catalogue reports UIImageRenderingModeAutomatic and is resolved to template at
 // draw time, so the AlwaysTemplate test walked straight past the app's own icons.
+static BOOL ADIsTabBarItemish(UIView *v);
+// Walk UP. ADIsTabBarItemish names CONTAINER classes, so the image view that actually
+// holds the cart glyph never matches on its own -- only an ancestor does. Declared
+// here rather than next to the sweep because THREE separate paths repaint glyphs and
+// all three need this gate: setImage:, setImage:forState:, and the didMoveToWindow
+// catch-up. v5.21.0 gated the first two and the cart tab stayed white, because the
+// third one was still repainting it.
+static BOOL ADInTabBarChain(UIView *v){
+    int d = 0;
+    while (v && d++ < 12){ if (ADIsTabBarItemish(v)) return YES; v = v.superview; }
+    return NO;
+}
+
 static inline BOOL ADImageIsTemplateish(UIImage *im){
     if (!im) return NO;
     if (im.renderingMode == UIImageRenderingModeAlwaysTemplate) return YES;
@@ -1627,6 +1657,12 @@ static void ADRunProbe(void){
     %orig;
     @try {
         if (!gP.enabled || !self.window || ADIsWebKitOwned(self)) return;
+        // The tab bar owns its own colours. Both branches below repaint: the backdrop
+        // drops a dark panel behind any transparent artwork, and the catch-up
+        // glyphifies and re-tints. Between them that is the white cart icon and the
+        // nav items that read as blank until tapped -- tapping installs the selected
+        // artwork through a path that already ran before injection.
+        if (ADInTabBarChain(self)) return;
 
         // (1) Backdrop for TRANSPARENT images — cheap, always-on-when-enabled.
         if (gP.imageBackdrop){
@@ -1787,15 +1823,6 @@ static NSDictionary *ADRecolorTextAttrs(NSDictionary *attrs){
 // Results are cached per UIImage (checked-and-not-a-glyph is remembered too), so a
 // given image is analysed at most once no matter how often it is re-assigned during
 // scrolling.
-static BOOL ADIsTabBarItemish(UIView *v);
-// Walk UP. ADIsTabBarItemish names CONTAINER classes, so the image view that
-// actually holds the cart glyph never matches on its own -- only an ancestor does.
-static BOOL ADInTabBarChain(UIView *v){
-    int d = 0;
-    while (v && d++ < 12){ if (ADIsTabBarItemish(v)) return YES; v = v.superview; }
-    return NO;
-}
-
 static const void *kADGlyphChecked = &kADGlyphChecked;
 
 static UIImage *ADGlyphify(UIImage *img){
