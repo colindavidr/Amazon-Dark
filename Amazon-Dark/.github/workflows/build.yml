@@ -1,0 +1,63 @@
+name: Build AmazonDark (rootless .deb)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths-ignore: [ '**.md', 'LICENSE' ]
+  workflow_dispatch:
+  release:
+    types: [ created ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Cache Theos + SDKs keyed on their upstream HEADs, so a warm run skips the
+      # multi-hundred-MB download. Invalidates automatically when theos/sdks move.
+      - name: Compute Theos cache key
+        run: |
+          echo "upstream_heads=$(git ls-remote https://github.com/theos/theos | head -n1 | cut -f1)-$(git ls-remote https://github.com/theos/sdks | head -n1 | cut -f1)" >> "$GITHUB_ENV"
+
+      - name: Cache Theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/theos
+          key: ${{ runner.os }}-theos-${{ env.upstream_heads }}
+
+      # Installs Theos + the Linux iOS toolchain + SDKs and exports $THEOS.
+      # Pinned to a release tag rather than @main.
+      - name: Set up Theos
+        uses: Randomblock1/theos-action@v1
+
+      - name: Lint Logos %orig usage + header linkage
+        run: bash scripts/lint-logos.sh
+
+      - name: Build rootless package
+        env:
+          THEOS_PACKAGE_SCHEME: rootless
+        run: |
+          rm -f packages/*.deb || true
+          make clean || true
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          echo "---- built packages ----"
+          ls -l packages/
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AmazonDark-rootless-deb
+          path: packages/*.deb
+          if-no-files-found: error
+
+      - name: Attach .deb to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

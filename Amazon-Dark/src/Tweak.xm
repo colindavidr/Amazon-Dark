@@ -1,0 +1,2550 @@
+/*
+ * AmazonDark v4.0.0  —  "True Dark" rewrite
+ * ============================================================================
+ * Target: Amazon Shopping iOS app (com.amazon.Amazon), v27.x, NathanLR rootless,
+ *         arm64 / arm64e. iOS 15+.
+ *
+ * WHY THIS IS A REWRITE (and not another v3.x inversion tweak)
+ * ----------------------------------------------------------------------------
+ * v3.x forced a `colorInvert` CAFilter onto the top-level UIWindow layer and then
+ * tried to *counter-invert* every image layer back to normal. That fight is
+ * inherently racy: the window inverts synchronously, but per-image counter-filters
+ * only land on layout, so photos flash (and often stay) as negatives. That is the
+ * root cause of "everything is dark but the images are inverted."
+ *
+ * A real dark mode never inverts a photo in the first place. That is what NOIR /
+ * Dark Reader do on the web, and it is the behavior we want. So v4 stops inverting
+ * and instead darkens each surface with a method appropriate to that surface:
+ *
+ *   1. WEB VIEWS  (Home gateway, Cart, PDP, Search, most "content"):  Dark Reader.
+ *      We bundle the official Dark Reader engine (MIT, resources/darkreader.js) and
+ *      call DarkReader.enable(theme). Dark Reader analyses each element's real
+ *      colors and generates a genuine dark theme. It deliberately LEAVES <img>,
+ *      <picture>, <video>, <canvas> and background images ALONE. This is the fix
+ *      for inverted images, and it is the surface the user confirmed works perfectly
+ *      via the NOIR Safari extension.
+ *
+ *   2. NATIVE CHROME  (tab bar, nav/search bar, SwiftUI/UIKit surfaces):  the app's
+ *      OWN native dark theme. Confirmed in the 27.11.8 binary: a complete native
+ *      dark theme (ANXDarkModeServiceImpl, dark ConfigurableChromeSkins, dark
+ *      tab-bar tokens) gated behind ONE Weblab, NAVX_DARK_MODE_IOS_1283655
+ *      (default-treatment "C" = off). We flip that gate on client-side + set the
+ *      appearance preference to dark + make the trait-observer report dark, then
+ *      fire ANXAppearanceModeDidChangeNotification. Amazon then renders its own
+ *      designed dark chrome — correct icons, correct accent colors, no inversion.
+ *
+ *   3. NATIVE NON-WEB CONTENT that stays light because it is server-driven and the
+ *      server withholds dark color tokens for accounts outside the dark cohort:
+ *      an OPTIONAL, preference-gated, background-only darkening pass that recolors
+ *      solid light backgrounds toward the configured dark background and NEVER
+ *      touches image/glyph layers. Off by default (see AD_PREF_NATIVE_FALLBACK).
+ *
+ * Everything is controlled by a preference plist (see prefs/ subproject), so this
+ * is a true dark mode with color settings, like CarBridge / OneSettings, not a
+ * one-size invert.
+ *
+ * NATHANLR SAFETY (carried over verbatim from the CarBridgeReborn sessions)
+ * ----------------------------------------------------------------------------
+ *  - ZERO Obj-C in %ctor: no NSLog/os_log, no @"" literals at ctor scope. The ObjC
+ *    runtime is not guaranteed ready when the dylib loads on NathanLR; touching it
+ *    there SIGBUS/SIGABRTs. %ctor uses only raw write() syscalls + a process guard.
+ *  - All Obj-C work is deferred onto the main queue / dispatch_after sweeps.
+ *  - File logging to $TMPDIR (sandbox-writable; /var/mobile is NOT writable from a
+ *    sandboxed app — that mistake cost a whole session last time).
+ *  - Every hook body is wrapped in @try/@catch so an unexpected shape is absorbed.
+ *  - No auto-killall in postinst (respring races with Ellekit/dpkg triggers).
+ * ============================================================================
+ */
+
+#import <UIKit/UIKit.h>
+#import <WebKit/WebKit.h>
+#import <QuartzCore/QuartzCore.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
+#import <string.h>
+#import <stdio.h>
+#import <unistd.h>
+#import <fcntl.h>
+#import <dlfcn.h>
+#import "ADColor.h"
+#import "ADImageKey.h"
+
+extern char *__progname;
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wunused-function"
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+#pragma clang diagnostic ignored "-Wobjc-method-access"
+
+// ─── the Weblab that gates Amazon's native dark theme (confirmed in binary) ─────────
+#define AD_DARK_WEBLAB      "NAVX_DARK_MODE_IOS_1283655"
+#define AD_DARK_TREATMENT   "T1"   // change to T2/T3 if a future build gates on another
+
+// Preference domain (matches prefs subproject + postinst).
+#define AD_PREF_DOMAIN      "com.colindavidr.amazondark"
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Class forward-decls. We declare unknown Amazon classes as UIView/NSObject so the
+// compiler resolves selectors; Logos/%hook only installs on classes that exist at
+// runtime, so declaring one that is absent in some build is harmless.
+// ════════════════════════════════════════════════════════════════════════════════
+@interface ANXDarkModeServiceImpl : NSObject
+- (BOOL)isDarkModeExperienceEnabled;
+- (BOOL)isDarkModeExperienceActive;
+- (BOOL)systemDarkModeActive;
+@end
+
+@interface AXUSplashScreenViewController : UIViewController @end
+@interface TezBaseSplashScreenViewController : UIViewController @end
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// Logging (file-based, sandbox-safe). Raw writes only from ctor; Obj-C-free.
+// ─────────────────────────────────────────────────────────────────────────────────
+static int gFD = -1;
+static void ADOpenLog(void){
+    const char *t = getenv("TMPDIR");
+    char p[2048];
+    if (t && *t) snprintf(p, sizeof(p), "%sAmazonDark.log", t);   // TMPDIR ends with '/'
+    else         strncpy(p, "/tmp/AmazonDark.log", sizeof(p));
+    gFD = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+}
+static void ADRaw(const char *s){ if (gFD >= 0){ write(gFD, s, strlen(s)); write(gFD, "\n", 1); } }
+
+// Formatted logging. Safe after launch (Obj-C available); never called from %ctor.
+static void ADLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1,2);
+static void ADLog(NSString *fmt, ...){
+    @try {
+        va_list ap; va_start(ap, fmt);
+        NSString *m = [[NSString alloc] initWithFormat:fmt arguments:ap];
+        va_end(ap);
+        ADRaw([[@"[AmazonDark] " stringByAppendingString:m] UTF8String]);
+    } @catch(...) {}
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PREFERENCES
+// Read straight from the plist the settings bundle writes. We avoid a hard Cephei
+// dependency (keeps the tweak self-contained); NSUserDefaults(suiteName:) reads the
+// same file HBPreferences/Cephei write to under rootless.
+// ════════════════════════════════════════════════════════════════════════════════
+typedef struct {
+    BOOL  enabled;            // master on/off
+    BOOL  webDarkReader;      // use Dark Reader in web views
+    BOOL  nativeTheme;        // force Amazon's native dark theme (weblab)
+    BOOL  imageKeyBackground; // corner-key white studio backdrops in photos (opt-in)
+    BOOL  imageBackdrop;      // dark panel behind images (helps transparent ones)
+    BOOL  nativeRecolor;      // Dark Reader colour engine over native (non-web) content
+    long  brightness;         // Dark Reader 0..100+ (default 100)
+    long  contrast;           // Dark Reader 0..100+ (default 100)
+    long  sepia;              // Dark Reader 0..100  (default 0)
+    long  grayscale;          // Dark Reader 0..100  (default 0)
+    char  bgHex[8];           // dark scheme background, "#RRGGBB"
+    char  fgHex[8];           // dark scheme text,       "#RRGGBB"
+} ADPrefs;
+
+static ADPrefs gP;
+static void ADSyncColorEngine(void);
+static const void *kADModImageKey = &kADModImageKey;
+static inline BOOL ADIsModifiedImage(UIImage *im){ return im && objc_getAssociatedObject(im, kADModImageKey) != nil; }
+static inline void ADMarkModifiedImage(UIImage *im){ if (im) objc_setAssociatedObject(im, kADModImageKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+static UIColor *ADColorFromHex(const char *hex);
+static UIImage *ADGlyphify(UIImage *img);
+static void ADRunProbe(void);
+
+static long ADPrefLong(NSDictionary *d, NSString *k, long def){
+    id v = d[k]; return (v && [v respondsToSelector:@selector(longValue)]) ? [v longValue] : def;
+}
+static BOOL ADPrefBool(NSDictionary *d, NSString *k, BOOL def){
+    id v = d[k]; return (v && [v respondsToSelector:@selector(boolValue)]) ? [v boolValue] : def;
+}
+static void ADPrefHex(NSDictionary *d, NSString *k, const char *def, char *out){
+    id v = d[k];
+    NSString *s = ([v isKindOfClass:[NSString class]] && [v length] >= 4) ? v : @(def);
+    strncpy(out, s.UTF8String, 7); out[7] = 0;
+}
+
+static void ADLoadPrefs(void){
+    // Defaults: everything a "true dark mode" wants, image inversion OFF.
+    gP.enabled = YES; gP.webDarkReader = YES; gP.nativeTheme = YES;
+    gP.imageBackdrop = YES;
+    gP.imageKeyBackground = NO;
+    gP.nativeRecolor = YES;
+    gP.brightness = 100; gP.contrast = 100; gP.sepia = 0; gP.grayscale = 0;
+    strcpy(gP.bgHex, "#181a1b"); strcpy(gP.fgHex, "#e8e6e3");
+    @try {
+        NSUserDefaults *u = [[NSUserDefaults alloc] initWithSuiteName:@(AD_PREF_DOMAIN)];
+        NSDictionary *d = [u dictionaryRepresentation] ?: @{};
+        // also merge the on-disk plist if present (rootless prefs path)
+        NSString *pp = [NSString stringWithFormat:@"/var/jb/var/mobile/Library/Preferences/%s.plist", AD_PREF_DOMAIN];
+        NSDictionary *fromFile = [NSDictionary dictionaryWithContentsOfFile:pp];
+        if (fromFile.count){ NSMutableDictionary *m = [d mutableCopy]; [m addEntriesFromDictionary:fromFile]; d = m; }
+
+        gP.enabled            = ADPrefBool(d, @"enabled",            gP.enabled);
+        gP.webDarkReader      = ADPrefBool(d, @"webDarkReader",      gP.webDarkReader);
+        gP.nativeTheme        = ADPrefBool(d, @"nativeTheme",        gP.nativeTheme);
+        gP.imageBackdrop      = ADPrefBool(d, @"imageBackdrop",      gP.imageBackdrop);
+        gP.imageKeyBackground = ADPrefBool(d, @"imageKeyBackground", gP.imageKeyBackground);
+        gP.nativeRecolor      = ADPrefBool(d, @"nativeRecolor",      gP.nativeRecolor);
+        gP.brightness         = ADPrefLong(d, @"brightness",         gP.brightness);
+        gP.contrast           = ADPrefLong(d, @"contrast",           gP.contrast);
+        gP.sepia              = ADPrefLong(d, @"sepia",              gP.sepia);
+        gP.grayscale          = ADPrefLong(d, @"grayscale",          gP.grayscale);
+        ADPrefHex(d, @"bgHex", "#181a1b", gP.bgHex);
+        ADPrefHex(d, @"fgHex", "#e8e6e3", gP.fgHex);
+    } @catch(...) {}
+    ADSyncColorEngine();
+    ADLog(@"prefs: enabled=%d web=%d nativeTheme=%d nativeRecolor=%d bright=%ld contrast=%ld gray=%ld sepia=%ld bg=%s fg=%s",
+          gP.enabled, gP.webDarkReader, gP.nativeTheme, gP.nativeRecolor,
+          gP.brightness, gP.contrast, gP.grayscale, gP.sepia, gP.bgHex, gP.fgHex);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 1 — WEB VIEWS via bundled Dark Reader
+// ════════════════════════════════════════════════════════════════════════════════
+
+// Locate our bundled darkreader.js next to the dylib (rootless-safe: use dladdr to
+// find our own install dir, then read the sibling resource).
+static NSString *ADBundledDarkReaderJS(void){
+    static NSString *cached = nil;
+    static BOOL tried = NO;
+    if (tried) return cached;
+    tried = YES;
+    @try {
+        Dl_info info; static int anchor;
+        if (dladdr((const void *)&anchor, &info) && info.dli_fname){
+            NSString *dylib = @(info.dli_fname);
+            NSString *dir = [dylib stringByDeletingLastPathComponent];
+            // Theos installs BUNDLE resources to .../AmazonDark.bundle next to the dylib.
+            NSArray *cands = @[
+                [dir stringByAppendingPathComponent:@"AmazonDark.bundle/darkreader.js"],
+                [dir stringByAppendingPathComponent:@"darkreader.js"],
+                @"/var/jb/Library/Application Support/AmazonDark/darkreader.js",
+            ];
+            for (NSString *c in cands){
+                NSString *s = [NSString stringWithContentsOfFile:c encoding:NSUTF8StringEncoding error:nil];
+                if (s.length){
+                    cached = s;
+                    ADLog(@"darkreader.js loaded (%lu bytes) from %@", (unsigned long)s.length, c);
+                    break;
+                }
+                ADLog(@"darkreader.js NOT at %@", c);
+            }
+            if (!cached.length)
+                ADLog(@"FATAL: darkreader.js missing — web surfaces will stay LIGHT. "
+                       "Check the package installed it under Application Support/AmazonDark.");
+        }
+    } @catch(...) {}
+    return cached;
+}
+
+// The theme literal, built from live prefs (shared by both the heavy bootstrap and
+// the lightweight re-enable call).
+// THE HOME-TAB VEIL, root-caused by the DOM probe:
+//   IMG{filter=none, op=1, blend=multiply, bg=rgba(0,0,0,0)}
+// Amazon sets mix-blend-mode:multiply on product images. Multiply is a no-op against
+// white (x * 1 = x), so on Amazon's stock light page the images look untouched — but
+// multiply against a DARK backdrop multiplies every pixel by that dark colour, so the
+// photo is literally blended into the background. That is the "semi-transparent black
+// overlay" over the products, and it explains why filter and opacity resets did
+// nothing: neither was ever involved. Forcing mix-blend-mode:normal restores the
+// images exactly. isolation:auto stops a parent stacking context re-introducing it.
+//
+// Fixes object passed as enable()'s 2nd argument. ignoreImageAnalysis:['*'] stops
+// Dark Reader hiding / inverting / solid-filling images — the home-tab product veil.
+// This is the web-side half of the project's core promise: never touch imagery.
+//
+// The css field is injected by Dark Reader as an authoritative override sheet
+// (overrideStyle.textContent in dynamic-theme/index.ts), so it wins the cascade.
+// We use it to undo the OTHER way Dark Reader can veil a photo: it runs
+// modifyGradientColor() on every CSS gradient stop (a path entirely separate from
+// image analysis), so a white→transparent scrim gradient laid over a hero image
+// gets its stops darkened into a grey/black film. The rules below force any element
+// that layers a gradient ON TOP of a background image to drop the gradient, and
+// neutralise standalone overlay layers, without touching gradients used as real
+// button or chip fills.
+static NSString *ADFixesLiteral(void){
+    // The image backdrop is only meaningful where an image has TRANSPARENT pixels:
+    // a dark panel behind an opaque JPEG is completely hidden by the photo. So this
+    // helps transparent PNGs (icons, cut-out product shots) and is a harmless no-op
+    // everywhere else. It cannot darken white that is baked into a JPEG's pixels -
+    // that needs real pixel work, which is a separate decision.
+    NSString *imgBackdrop = gP.imageBackdrop
+        ? [NSString stringWithFormat:@"img{background-color:%s !important;}", gP.bgHex]
+        : @"";
+    return [NSString stringWithFormat:
+            @"{css:'"
+             "img,picture,video,canvas,svg{filter:none !important;opacity:1 !important;"
+             "mix-blend-mode:normal !important;isolation:auto !important;}"
+             "%@"
+             "[style*=\\\"background-image\\\"]{filter:none !important;}"
+             // Heart circle. The button behind the heart is a light/white disc; on a
+             // dark theme it reads as a bright blob that hides the glyph. Darken it at
+             // documentStart so there is never a white flash. (The earlier
+             // brightness(0)+invert whitened the ENTIRE element -- circle and heart
+             // together -- which is exactly what created the blob.) The glyph itself is
+             // lightened by the JS pass below.
+             "[class*=heart],[class*=lists-framework],[class*=wish]"
+             "{background-color:#181a1b !important;}"
+             // Darkening blends crush their content toward black on a dark theme; the
+             // deal badges use them inline. Neutralise at documentStart so the text is
+             // legible on first paint instead of after the repair catches up.
+             "[style*=multiply],[style*=darken],[style*=color-burn],"
+             "[class*=deal] [style*=blend],[class*=Deal] [style*=blend]"
+             "{mix-blend-mode:normal !important;isolation:auto !important;}"
+             "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}",
+            imgBackdrop];
+}
+
+static NSString *ADThemeLiteral(void){
+    // mode:1 = dark. styleSystemControls themes form controls/scrollbars.
+    // The fixed/sticky headers Amazon uses respond better with these on.
+    return [NSString stringWithFormat:
+        @"{mode:1,brightness:%ld,contrast:%ld,sepia:%ld,grayscale:%ld,"
+         "darkSchemeBackgroundColor:'%s',darkSchemeTextColor:'%s',"
+         "styleSystemControls:true}",
+        gP.brightness, gP.contrast, gP.sepia, gP.grayscale, gP.bgHex, gP.fgHex];
+}
+
+// HEAVY: full Dark Reader UMD + first enable(). Injected ONCE per document at
+// documentStart via a WKUserScript. The 346KB engine is parsed a single time per page.
+static NSString *ADDarkReaderBootstrap(void){
+    NSString *dr = ADBundledDarkReaderJS();
+    if (!dr.length) return nil;
+    return [NSString stringWithFormat:
+        @"(function(){try{"
+         "if(window.__AMZDARK_LOADED__)return;window.__AMZDARK_LOADED__=1;%@\n" // DarkReader UMD
+         "if(window.DarkReader&&DarkReader.enable){"
+         "try{DarkReader.setFetchMethod(window.fetch);}catch(e){}"
+         // WCAG contrast repair. Dark Reader recolours from the page's own palette,
+         // which can leave text only marginally separated from its background - the
+         // '% off' badges and the descriptions under product photos being the
+         // reported cases. This measures the real computed contrast of every element
+         // that owns visible text and lifts ONLY the ones that actually fail, so
+         // brand colours that already read fine are untouched.
+         "window.__AMZDARK_FIXCONTRAST__=function(){try{"
+           "var FG='%@';"
+           "function ch(v){v=v/255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);}"
+           "function lum(c){var m=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)/.exec(c);"
+             "if(!m)return null;var a=m[4]===undefined?1:parseFloat(m[4]);if(a<0.1)return null;"
+             "return 0.2126*ch(+m[1])+0.7152*ch(+m[2])+0.0722*ch(+m[3]);}"
+           "function bgOf(e){while(e){var l=lum(getComputedStyle(e).backgroundColor);"
+             "if(l!==null)return l;e=e.parentElement;}return 0.02;}"
+           // Darkening blend modes are destructive on a dark theme: multiply/darken/
+           // color-burn all SUBTRACT light, so against a dark backdrop they crush the
+           // element toward black. That is what veiled the home tiles (fixed in v5.8.0
+           // via CSS on media elements) and it is back on the explore pane because
+           // there the blend mode sits on a CONTAINER, not the <img> - resetting the
+           // child cannot undo a parent's blending of the whole composited subtree.
+           // Neutralising by COMPUTED value catches it wherever it lives: img, div,
+           // background-image element or wrapper. Lighten/screen/overlay are left
+           // alone - they add light, which is harmless here.
+           "var BAD={'multiply':1,'darken':1,'color-burn':1};"
+           "function collect(root,out,depth){try{"
+             "var list=root.querySelectorAll('*');"
+             "for(var a=0;a<list.length;a++){var e=list[a];out.push(e);"
+               // Shadow roots are separate trees: querySelectorAll stops at the host,
+               // so anything Amazon builds inside one is unreachable from the document.
+               "if(e.shadowRoot&&depth<4&&out.length<6000)collect(e.shadowRoot,out,depth+1);}"
+             "}catch(e){}return out;}"
+           "var els=collect(document.body,[],0),n=0,bfix=0,lfix=0,gfix=0;"           // Read the themed background off <html> rather than plumbing another
+           // format argument through two call sites.
+           "var BG='rgb(24,26,27)';try{var hb=getComputedStyle(document.documentElement).backgroundColor;"
+             "var hl=lum(hb);if(hl!==null&&hl<0.25)BG=hb;}catch(e){}"
+           "var SKIP=/star|prime|logo|flag|swatch|thumb|sponsor|pill-image|product-image|photo|heart|wish|lists-framework/i;"           // Classes the probe confirmed are monochrome UI glyphs. These get a
+           // looser size cap, because the heart measures 33x33 against a 32 limit and
+           // was failing by a single pixel, while sbs-pill-image at 34x34 is a product
+           // thumbnail that must keep its colour.
+           "var ICON=/heart|wish|favor|lists-framework|a-icon|icon-|-icon/i;"           // collect() walks document.body's DESCENDANTS, so <html> and <body>
+           // themselves are never in els. A page that paints its own light background
+           // on body -- Amazon Pharmacy's pink -- is invisible to every per-element
+           // rule, and its inline/high-specificity value also overrides Dark Reader's
+           // sheet. Darken them explicitly. Both solid and gradient forms.
+           "try{var roots=[document.documentElement,document.body];"
+             "for(var ri=0;ri<roots.length;ri++){var be=roots[ri];if(!be)continue;"
+               "var bcs=getComputedStyle(be),bbl=lum(bcs.backgroundColor);"
+               "if(bbl!==null&&bbl>0.4){be.style.setProperty('background-color',BG,'important');lfix++;}"
+               "var bbi=bcs.backgroundImage||'';"
+               "if(bbi.indexOf('gradient')>=0){var bmx=0,bm,bre=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/g;"
+                 "while((bm=bre.exec(bbi))){var bl2=0.2126*ch(+bm[1])+0.7152*ch(+bm[2])+0.0722*ch(+bm[3]);"
+                   "if(bl2>bmx)bmx=bl2;}"
+                 "if(bmx>0.4){be.style.setProperty('background-image','none','important');"
+                   "be.style.setProperty('background-color',BG,'important');lfix++;}}}"
+           "}catch(e){}"
+           "for(var i=0;i<els.length;i++){var el=els[i];"
+             "var cs=getComputedStyle(el);"
+             // NO LIGHT PANELS. Anything still measuring light after Dark Reader has
+             // run is a miss -- a gradient it could not parse, a shadow subtree, an
+             // inline style it skipped. Correct by COMPUTED value so the mechanism
+             // does not matter. els is in document order, so an ancestor is darkened
+             // before its children are contrast-checked against it.
+             "if(lfix<300){var pl=lum(cs.backgroundColor);"
+               "if(pl!==null&&pl>0.55){el.style.setProperty('background-color',BG,'important');lfix++;}}"
+             // LIGHT GRADIENTS. lfix read 0 on every line while a 430x627 light panel
+             // sat on screen, because a gradient lives in background-IMAGE and is
+             // invisible to a backgroundColor check. The probe named it:
+             // div.wd-backdrop-gradient, the 'Researched by Alexa' card. Parse the
+             // stops and only neutralise gradients that actually resolve light, so
+             // decorative dark gradients are left alone.
+             "if(lfix<300){var gbi=cs.backgroundImage||'';"
+               "if(gbi.indexOf('gradient')>=0){var g2=el.getBoundingClientRect();"
+                 "if(g2.width>120&&g2.height>60){var gmx=0,gm,gre=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/g;"
+                   "while((gm=gre.exec(gbi))){var gl2=0.2126*ch(+gm[1])+0.7152*ch(+gm[2])+0.0722*ch(+gm[3]);"
+                     "if(gl2>gmx)gmx=gl2;}"
+                   "if(gmx>0.55){el.style.setProperty('background-image','none','important');"
+                     "el.style.setProperty('background-color',BG,'important');lfix++;}}}}"
+             // SPRITE AND <img> GLYPHS -- the heart and the filter control.
+             // ignoreImageAnalysis:['*'] switches off Dark Reader's dark-image
+             // inversion (added in v5.4.0 to protect product photos) and the injected
+             // img{filter:none} rule blocks it a second time, so a monochrome icon
+             // shipped as an <img> or CSS sprite has nothing acting on it at all.
+             // Forcing it white is safe at glyph size and beats measuring pixels,
+             // which cannot work here: these come from m.media-amazon.com and would
+             // taint a canvas. Inline !important outranks stylesheet !important, so
+             // this wins over our own img{filter:none}.
+             "if(gfix<80&&!el.__adGlyph){try{var gr=el.getBoundingClientRect();"
+               "var cn2=el.className;if(cn2&&cn2.baseVal!==undefined)cn2=cn2.baseVal;"
+               "cn2=(cn2||'').toString();"
+               // textContent was the wrong test. Amazon's standard icon markup nests a
+               // visually-hidden label -- <span class=a-icon><span class=a-icon-alt>Add
+               // to list</span></span> -- so textContent is non-empty and the guard
+               // rejected precisely the markup being targeted. That is why the filter
+               // control (no nested label) went white and the heart did not. Only the
+               // element's OWN direct text nodes should disqualify it.
+               "var ot=false;for(var z=0;z<el.childNodes.length;z++){var nz=el.childNodes[z];"
+                 "if(nz.nodeType===3&&nz.nodeValue&&nz.nodeValue.trim()){ot=true;break;}}"
+               "var lim=ICON.test(cn2)?40:32;"
+               "if(gr.width>5&&gr.width<=lim&&gr.height>5&&gr.height<=lim&&!SKIP.test(cn2)&&!ot){"
+                 "var isI=el.tagName.toLowerCase()==='img';"
+                 "var hasB=cs.backgroundImage&&cs.backgroundImage!=='none';"
+                 "if(isI||hasB){el.style.setProperty('filter','brightness(0) invert(1)','important');"
+                   "el.__adGlyph=1;gfix++;}}"
+             "}catch(e){}}"
+             "if(BAD[cs.mixBlendMode]&&bfix<800){"
+               "el.style.setProperty('mix-blend-mode','normal','important');"
+               "el.style.setProperty('isolation','auto','important');bfix++;}"
+             // SVG icons. Dark Reader recolours CSS 'color'; it does not touch the
+             // fill/stroke PRESENTATION ATTRIBUTES that line-art icons use, so an
+             // <svg fill="#000"> stays black on a themed page. Measured on device:
+             // the X and recent-search glyphs sit at rgb(12,13,14) - actually darker
+             // than the rgb(24,26,27) background - while text on the same page themed
+             // correctly. Only dark fills are redirected, so multi-colour artwork and
+             // brand marks keep their palette.
+             "if(el.namespaceURI==='http://www.w3.org/2000/svg'){"
+               "var fl2=lum(cs.fill),sl=lum(cs.stroke);"
+               "if(fl2!==null&&fl2<0.22){el.style.setProperty('fill',FG,'important');n++;}"
+               "if(sl!==null&&sl<0.22){el.style.setProperty('stroke',FG,'important');n++;}"
+             "}"
+             // ICON FONTS / PSEUDO-ELEMENT GLYPHS. The text pass below requires a
+             // literal child text node, and a ::before glyph has none - the character
+             // lives in generated content. So an icon font renders in the element's
+             // own dark `color` and nothing above ever looks at it. This is the single
+             // most likely reason autocomplete reports 0/0 while its clock and X
+             // glyphs sit there black.
+             "function hasC(p){if(!p)return false;var c=p.content;"
+               "if(!c||c==='none'||c==='normal')return false;return c.length>2;}"
+             "try{var pb=getComputedStyle(el,'::before'),pa=getComputedStyle(el,'::after');"
+               "if((hasC(pb)||hasC(pa))&&n<400){var pcl=lum(cs.color);"
+                 "if(pcl!==null&&pcl<0.30){el.style.setProperty('color',FG,'important');n++;}}"
+             "}catch(e){}"
+             // MASK-IMAGE ICONS. The mask is the shape; the visible colour is the
+             // element's background-color. Dark Reader treats that as a background and
+             // darkens it, which paints the glyph in the page background colour - i.e.
+             // makes it vanish rather than merely stay dark.
+             "try{var mi=cs.webkitMaskImage||cs.maskImage;"
+               "if(mi&&mi!=='none'&&n<400){var mbl=lum(cs.backgroundColor);"
+                 "if(mbl!==null&&mbl<0.55){el.style.setProperty('background-color',FG,'important');n++;}}"
+             "}catch(e){}"
+             "if(n>=400)continue;"
+             "var t=false;"
+             "for(var k=0;k<el.childNodes.length;k++){var nd=el.childNodes[k];"
+               "if(nd.nodeType===3&&nd.nodeValue&&nd.nodeValue.trim()){t=true;break;}}"
+             "if(!t)continue;"
+             "var fl=lum(cs.color);if(fl===null)continue;"
+             "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
+             "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
+           // HEARTS. Two parts, kept separate so they cannot fight: darken the circle
+           // (a light background on the element or a near ancestor) and lighten the
+           // glyph by whatever actually draws it. Doing this by mechanism avoids the
+           // whole-box whitening that hid the heart behind a white disc.
+           "try{var HRT=document.querySelectorAll('[class*=heart],[class*=wish],[class*=lists-framework]');"
+             "for(var hz=0;hz<HRT.length;hz++){var he=HRT[hz];var hcs=getComputedStyle(he);"
+               // circle: darken this element's light bg, and the first light ancestor bg
+               "if(lum(hcs.backgroundColor)>0.5)he.style.setProperty('background-color',BG,'important');"
+               "var pe=he.parentElement,pd=0;"
+               "while(pe&&pd++<3){var pl=lum(getComputedStyle(pe).backgroundColor);"
+                 "if(pl!==null&&pl>0.5){pe.style.setProperty('background-color',BG,'important');break;}"
+                 "pe=pe.parentElement;}"
+               // glyph: mask -> its background-color IS the fill; img/bgimg -> invert;
+               // svg/plain -> fill/color. Never brightness(0), which flattens the box.
+               "var hmi=hcs.webkitMaskImage||hcs.maskImage;"
+               "if(hmi&&hmi!=='none'){he.style.setProperty('background-color',FG,'important');}"
+               "else if(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none')){"
+                 "he.style.setProperty('filter','invert(1)','important');}"
+               "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
+                 "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
+             "}}catch(e){}"
+           // One-shot probe. Two builds have now been spent inferring what paints
+           // these glyphs from what does NOT move. Cheaper to just ask the DOM: report
+           // the first few icon-sized elements and which mechanism draws each, so the
+           // next change targets a known selector instead of a guess.
+           // The one-shot flag was the bug: __AMZDARK_APPLY__ calls this once at
+           // bootstrap and DISCARDS the result, so the probe was always spent before
+           // the first logged invocation. Compute once, cache, return every time.
+           // Caching fixed the "consumed at bootstrap" bug but introduced its twin:
+           // the bootstrap call runs against a near-empty DOM, found nothing, and
+           // cached THAT. Hence probe=none while gfix was busy matching elements.
+           // Only cache a result that actually found something; keep retrying until
+           // one does.
+           // NO CACHE. Cached-once has now been wrong twice: spent on the bootstrap
+           // DOM, then locked to an early snapshot holding only the filter icon while
+           // the product cards had not rendered. Recompute every call -- it is two
+           // bounded scans behind a 400ms debounce -- so the log always describes the
+           // DOM as it stands right now.
+           "var pr='';try{{"
+             "var seen={},acc=[];"
+             "for(var q=0;q<els.length&&acc.length<8;q++){var pe=els[q];"
+               "var rc=pe.getBoundingClientRect();"
+               "if(rc.width<6||rc.width>40||rc.height<6||rc.height>40)continue;"
+               "if(pe.children.length>2)continue;"
+               "var pcs=getComputedStyle(pe),tg=pe.tagName.toLowerCase(),kind='';"
+               "var pbi=pcs.backgroundImage,pmi=pcs.webkitMaskImage||pcs.maskImage;"
+               "var ppb=getComputedStyle(pe,'::before');"
+               "if(tg==='img')kind='img';"
+               "else if(pmi&&pmi!=='none')kind='mask';"
+               "else if(pbi&&pbi!=='none')kind='bgimg';"
+               "else if(hasC(ppb))kind='pseudo';"
+               "else if(pe.namespaceURI==='http://www.w3.org/2000/svg')kind='svg';"
+               "else continue;"
+               "var cn=pe.className;if(cn&&cn.baseVal!==undefined)cn=cn.baseVal;"
+               "cn=(cn||'').toString().split(' ')[0].slice(0,22);"
+               "var k=kind+'.'+cn;if(seen[k])continue;seen[k]=1;"
+               "acc.push(k+'@'+Math.round(rc.width)+'x'+Math.round(rc.height)+'/'+pcs.color);}"
+             // also name whatever is still LIGHT, which is what the Alexa card is
+             "var lt=[];for(var w=0;w<els.length&&lt.length<3;w++){var le=els[w];"
+               "var lcs=getComputedStyle(le),ll=lum(lcs.backgroundColor);"
+               // lfix has read 0 on every line, so whatever is still light is not a
+               // backgroundColor. A gradient is the obvious candidate and is invisible
+               // to lum(), so report those too rather than keep guessing at the pane.
+               "var lgi=lcs.backgroundImage||'';var lgr=lgi.indexOf('gradient')>=0;"
+               "if(!lgr&&(ll===null||ll<=0.55))continue;var lr=le.getBoundingClientRect();"
+               "if(lr.width<60||lr.height<20)continue;"
+               "var lc=le.className;if(lc&&lc.baseVal!==undefined)lc=lc.baseVal;"
+               "lt.push(le.tagName.toLowerCase()+'.'+(lc||'').toString().split(' ')[0].slice(0,18)"
+                 "+'@'+Math.round(lr.width)+'x'+Math.round(lr.height));}"
+             // Targeted: name the heart's markup directly instead of hoping it lands
+             // in the first N icon-sized elements.
+             "var ht=[];try{var hq=document.querySelectorAll("
+               "'[class*=heart],[class*=wish],[class*=favor],[aria-label*=list],[aria-label*=List]');"
+               "for(var y=0;y<hq.length&&ht.length<4;y++){var he=hq[y];"
+                 "var hr=he.getBoundingClientRect();if(hr.width<4)continue;"
+                 "var hcs=getComputedStyle(he),hk='plain';"
+                 "var hbi=hcs.backgroundImage,hmi=hcs.webkitMaskImage||hcs.maskImage;"
+                 "if(he.tagName.toLowerCase()==='img')hk='img';"
+                 "else if(hmi&&hmi!=='none')hk='mask';"
+                 "else if(hbi&&hbi!=='none')hk='bgimg';"
+                 "else if(he.namespaceURI==='http://www.w3.org/2000/svg')hk='svg';"
+                 "var hc=he.className;if(hc&&hc.baseVal!==undefined)hc=hc.baseVal;"
+                 "ht.push(hk+'.'+(hc||'').toString().split(' ')[0].slice(0,20)"
+                   "+'@'+Math.round(hr.width)+'x'+Math.round(hr.height)"
+                   "+'/f:'+(hcs.fill||'-')+'/c:'+hcs.color);}}catch(e){}"
+             "pr=(acc.length?(' probe='+acc.join(' ')):' probe=none')"
+               "+(lt.length?(' light='+lt.join(' ')):'')"
+               "+(ht.length?(' HEART='+ht.join(' ')):'');}"
+           "}catch(e){pr=' probeERR';}"
+           "return n+'/'+bfix+'/'+lfix+'/'+gfix+pr;}catch(e){return -1;}};"
+         "window.__AMZDARK_APPLY__=function(){try{"
+           "if(!document.querySelector('style.darkreader'))DarkReader.enable(%@,%@);"
+           "window.__AMZDARK_FIXCONTRAST__();"
+         "}catch(e){}};"
+         // Re-run the repair as the page fills in (carousels, lazy tiles), debounced
+         // so a busy DOM cannot turn this into a hot loop.
+         "try{var _t=null;new MutationObserver(function(){clearTimeout(_t);"
+           "_t=setTimeout(function(){try{window.__AMZDARK_FIXCONTRAST__();}catch(e){}},150);})"
+           ".observe(document.documentElement,{childList:true,subtree:true});}catch(e){}"
+         "window.__AMZDARK_APPLY__();"
+         // Re-apply when the page is restored from the back-forward cache (returning
+         // to a tab). pageshow.persisted is true exactly in that case, and it is the
+         // event that fires when no navigation happens — the cart's "went white on
+         // return" path. Also re-assert on visibility regain.
+         "try{window.addEventListener('pageshow',function(e){if(e.persisted)window.__AMZDARK_APPLY__();});}catch(e){}"
+         "try{document.addEventListener('visibilitychange',function(){if(!document.hidden)window.__AMZDARK_APPLY__();});}catch(e){}"
+         "}}catch(e){}})();",
+        dr, [NSString stringWithUTF8String:gP.fgHex], ADThemeLiteral(), ADFixesLiteral()];
+}
+
+// LIGHT: re-apply the theme. MUST be a no-op when the page is already themed.
+//
+// This previously ran DarkReader.disable() whenever style.darkreader was missing,
+// then re-enabled. That call strips Dark Reader's stylesheet, so the page snaps to
+// stock white before going dark again — and because the burst fires it repeatedly
+// (0/60/200/500ms on every viewDidAppear, plus each sweep), the home tab visibly
+// flashed white/dark/white. It was added to fix the cart, but the cart's real cause
+// was 'noflag' (the user script never ran in that document), which the self-heal
+// below handles. So the disable() was solving a problem that did not exist while
+// creating one that did. Removed.
+//
+// Now: if the stylesheet is present the page is themed and we touch nothing.
+// LIGHT: re-apply. Skipping DarkReader.enable() when the page is already themed is
+// what stopped the white flashing in v5.5.1 and must stay — but the REPAIR passes
+// must not inherit that early return.
+//
+// They did, and it made three builds' worth of work inert. The SVG fill fix, the
+// contrast lifting and the shadow-DOM traversal all live inside
+// __AMZDARK_FIXCONTRAST__, and this function returned before reaching it whenever
+// style.darkreader was present. On the search pane — which IS themed, its
+// recent-search text being correctly light — the native burst therefore did nothing
+// at all, which is exactly why those icons and labels never changed.
+//
+// So: enable() stays conditional, the repair runs every time. It is idempotent
+// (it only rewrites values that currently fail) and cheap on a settled page.
+static NSString *ADDarkReaderReapply(void){
+    return [NSString stringWithFormat:
+        @"(function(){try{"
+         "if(!(window.DarkReader&&DarkReader.enable))return 'noDR';"
+         "if(!document.querySelector('style.darkreader'))DarkReader.enable(%@,%@);"
+         "if(window.__AMZDARK_FIXCONTRAST__)return ''+window.__AMZDARK_FIXCONTRAST__();"
+         "return 'nofix';"
+         "}catch(e){return 'err';}})();",
+        ADThemeLiteral(), ADFixesLiteral()];
+}
+
+static void ADEnableDarkReaderIn(WKWebView *wv){
+    if (!gP.enabled || !gP.webDarkReader || !wv) return;
+    @try {
+        // Lightweight re-apply; the heavy engine arrives via the documentStart userscript.
+        NSString *js = ADDarkReaderReapply();
+        if (js.length){
+            [wv evaluateJavaScript:js completionHandler:^(id r, NSError *e){
+                @try {
+                    if (![r isKindOfClass:[NSString class]]) return;
+                    NSString *res = (NSString *)r;
+                    // 'n/bfix' = text colours lifted / blend modes neutralised.
+                    // 'nofix'  = the repair function is not defined in this document.
+                    // Deduped per URL+result so a settled page cannot spam the log.
+                    static NSMutableSet *seenFix = nil;
+                    if (!seenFix) seenFix = [NSMutableSet set];
+                    NSString *u2 = wv.URL.absoluteString ?: @"(none)";
+                    if (u2.length > 60) u2 = [u2 substringToIndex:60];
+                    NSString *k = [NSString stringWithFormat:@"%@|%@", u2, res];
+                    if (![seenFix containsObject:k]){
+                        [seenFix addObject:k];
+                        ADLog(@"repair %@ -> %@", u2, res);
+                    }
+                } @catch(...) {}
+            }];
+        }
+
+        // Name the page once per URL. Tells us which surfaces are actually web —
+        // a tab that never shows up here is native and needs a different fix.
+        static NSMutableSet *seen = nil;
+        if (!seen) seen = [NSMutableSet set];
+        NSString *u = wv.URL.absoluteString ?: @"(no url)";
+        if (u.length > 90) u = [u substringToIndex:90];
+        if (![seen containsObject:u]){
+            [seen addObject:u];
+            ADLog(@"web themed: %@", u);
+        }
+
+        // Report the page's ACTUAL state back into the log. The cart keeps reverting
+        // to light on tab-return and two rounds of native-side timing fixes have not
+        // held, so stop inferring: ask the document directly whether the engine is
+        // loaded, whether its stylesheet is still attached, and what readyState it is
+        // in. Deduped per URL+state so it cannot spam.
+        [wv evaluateJavaScript:
+            @"(function(){try{return (window.DarkReader?'DR':'noDR')+'/'"
+             "+(document.querySelector('style.darkreader')?'styled':'NOSTYLE')+'/'"
+             "+(window.__AMZDARK_LOADED__?'flag':'noflag')+'/'+document.readyState;}"
+             "catch(e){return 'err';}})()"
+             completionHandler:^(id result, NSError *err){
+            @try {
+                NSString *st = [result isKindOfClass:[NSString class]] ? (NSString *)result
+                                                                       : @"(nonstring)";
+                // Log state TRANSITIONS: remember the last state per URL and log only
+                // when it changes, so an oscillation shows as alternating lines instead
+                // of collapsing to one. This is what will confirm the flip is fixed.
+                static NSMutableDictionary *lastState = nil;
+                if (!lastState) lastState = [NSMutableDictionary dictionary];
+                NSString *prev = lastState[u];
+                if (!prev || ![prev isEqualToString:st]){
+                    lastState[u] = st;
+                    ADLog(@"web state: %@ -> %@%@", u, st, err ? @" (evalError)" : @"");
+                }
+
+                // SELF-HEAL. 'noflag' means __AMZDARK_LOADED__ is absent, i.e. the
+                // documentStart WKUserScript never ran in THIS document — so the page
+                // has no engine to re-enable and every light-touch re-apply is a no-op.
+                // That is the real cart failure: not a bfcache restore (which would
+                // keep the flag and lose only the styles), but a fresh document our
+                // script never reached, because the web view was created or navigated
+                // outside the window in which we attach the script.
+                //
+                // Rather than chase every creation path, repair it here: inject the
+                // full engine directly into the live document. evaluateJavaScript does
+                // not care how the document came to exist, so this works regardless.
+                // Overlay diagnostic: name the elements veiling product images. Amazon blocks
+                // remote DOM inspection, so the page has to tell us itself. Runs once per URL.
+                if ([st containsString:@"complete"]) {
+                    static NSMutableSet *ovSeen = nil;
+                    if (!ovSeen) ovSeen = [NSMutableSet set];
+                    if (![ovSeen containsObject:u]){
+                        NSString *probe =
+                          @"(function(){try{"
+                           "var imgs=[].slice.call(document.querySelectorAll('img'));"
+                           "var big=imgs.filter(function(i){var r=i.getBoundingClientRect();"
+                             "return r.width>=80&&r.height>=80;});"
+                           "if(!big.length)return 'imgs='+imgs.length+' big=0';"
+                           "var out=[];"
+                           "for(var n=0;n<big.length&&out.length<3;n++){var im=big[n];"
+                             "var cs=getComputedStyle(im);"
+                             "var r=im.getBoundingClientRect();"
+                             "var top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);"
+                             "var cover='self';"
+                             "if(top&&top!==im){var tcs=getComputedStyle(top);"
+                               "cover=(top.tagName||'?')+'.'+String(top.className||'').slice(0,24)"
+                                 "+'{bg='+tcs.backgroundColor+',bgi='+tcs.backgroundImage.slice(0,24)"
+                                 "+',op='+tcs.opacity+'}';}"
+                             "out.push('IMG{filter='+cs.filter+',op='+cs.opacity"
+                               "+',blend='+cs.mixBlendMode+',bg='+cs.backgroundColor"
+                               "+'} cover='+cover);}"
+                           "var bgEls=[].slice.call(document.querySelectorAll('div,span,a'))"
+                             ".filter(function(e){var c=getComputedStyle(e);"
+                               "if(c.backgroundImage.indexOf('url(')<0)return false;"
+                               "var r=e.getBoundingClientRect();return r.width>=80&&r.height>=80;});"
+                           "for(var m=0;m<bgEls.length&&m<2;m++){var be=bgEls[m];"
+                             "var bc=getComputedStyle(be);"
+                             "out.push('BGEL{filter='+bc.filter+',op='+bc.opacity"
+                               "+',bg='+bc.backgroundColor+',bgi='+bc.backgroundImage.slice(0,50)+'}');}"
+                           "var htmlF=getComputedStyle(document.documentElement).filter;"
+                           "var bodyF=getComputedStyle(document.body).filter;"
+                           "var png=0,jpg=0,other=0;"
+                           "for(var q=0;q<big.length;q++){var u2=(big[q].currentSrc||big[q].src||'');"
+                             "if(/\\.png(\\?|$)/i.test(u2))png++;"
+                             "else if(/\\.jpe?g(\\?|$)/i.test(u2))jpg++;else other++;}"
+                           "var fr=document.querySelectorAll('iframe').length;"
+                           "return 'img='+big.length+' png='+png+' jpg='+jpg+' other='+other"
+                             "+' bgEl='+bgEls.length+' iframes='+fr"
+                             "+' htmlFilter='+htmlF+' bodyFilter='+bodyF"
+                             "+' || '+out.join(' || ');"
+                           "}catch(e){return 'err:'+e;}})()";
+                        [wv evaluateJavaScript:probe completionHandler:^(id r3, NSError *e3){
+                            @try {
+                                if (![r3 isKindOfClass:[NSString class]]) return;
+                                NSString *res = (NSString *)r3;
+                                // Only remember a sample that actually found media. An
+                                // empty result means we looked too early (or the content
+                                // lives in a frame), so leave the URL un-cached and try
+                                // again on the next pass rather than caching a blind spot.
+                                BOOL useful = !([res containsString:@"img=0 bgEl=0"] ||
+                                                [res hasPrefix:@"imgs=0"]);
+                                if (useful) [ovSeen addObject:u];
+                                ADLog(@"overlay@%@: %@%@", u, res, useful ? @"" : @" [retrying]");
+                            } @catch(...) {}
+                        }];
+                    }
+                }
+                if ([st containsString:@"noflag"] || [st hasPrefix:@"noDR"]){
+                    // ROOT-CAUSE HALF. noflag recurring on every navigation means our
+                    // documentStart user script is not present on this web view's content
+                    // controller any more. The binary exports removeAllUserScripts and an
+                    // AMIPrewarmWebviewTask, so Amazon both prewarms web views (created
+                    // before we could hook init) and clears user scripts on reuse. Healing
+                    // the current document alone therefore fixes one page and leaves the
+                    // NEXT navigation unthemed — which is precisely the observed cycle:
+                    // noflag -> repair -> dark -> navigate -> noflag -> repair ...
+                    //
+                    // So re-attach the script here. Once it is back on the controller the
+                    // next document is themed at documentStart, before first paint, and
+                    // there is no white gap to repair.
+                    @try {
+                        WKUserContentController *ucc = wv.configuration.userContentController;
+                        Class WKUS = NSClassFromString(@"WKUserScript");
+                        NSString *boot = ADDarkReaderBootstrap();
+                        if (ucc && WKUS && boot.length){
+                            BOOL present = NO;
+                            for (WKUserScript *existing in ucc.userScripts){
+                                if ([existing.source containsString:@"__AMZDARK_LOADED__"]){
+                                    present = YES;
+                                    break;
+                                }
+                            }
+                            if (!present){
+                                WKUserScript *us =
+                                    [[WKUS alloc] initWithSource:boot
+                                                   injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                                forMainFrameOnly:NO];
+                                [ucc addUserScript:us];
+                                ADLog(@"web: user script re-attached (was stripped) for %@", u);
+                            }
+                        }
+                    } @catch(...) {}
+
+                    // Re-heal EVERY time the document is unthemed, not once per URL.
+                    // Guard on DOCUMENT identity: __AMZDARK_HEALED__ lives on window, so a
+                    // fresh document at a reused URL heals again while a single document is
+                    // never re-injected (no flash, no wasted 346KB parse).
+                    NSString *heal =
+                        @"(function(){try{"
+                         "if(window.__AMZDARK_HEALED__)return 'already';"
+                         "window.__AMZDARK_HEALED__=1;return 'heal';"
+                         "}catch(e){return 'heal';}})()";
+                    [wv evaluateJavaScript:heal completionHandler:^(id r2, NSError *e2){
+                        @try {
+                            if ([r2 isKindOfClass:[NSString class]] &&
+                                [(NSString *)r2 isEqualToString:@"heal"]){
+                                NSString *full = ADDarkReaderBootstrap();
+                                if (full.length){
+                                    ADLog(@"web repair: injecting full engine into %@", u);
+                                    [wv evaluateJavaScript:full completionHandler:^(id r3, NSError *e3){
+                                        if (e3) ADLog(@"web repair FAILED: %@", e3.localizedDescription);
+                                    }];
+                                }
+                            }
+                        } @catch(...) {}
+                    }];
+                }
+            } @catch(...) {}
+        }];
+    } @catch(...) {}
+}
+
+// Inject the FULL engine into whatever is already rendered (used once for web views
+// that existed before our hook — e.g. the warmed gateway — where the documentStart
+// userscript won't fire until the next load). Idempotent: the bootstrap self-guards
+// on window.__AMZDARK_LOADED__, so calling it repeatedly is safe.
+static void ADBootstrapDarkReaderIn(WKWebView *wv){
+    if (!gP.enabled || !gP.webDarkReader || !wv) return;
+    @try {
+        NSString *js = ADDarkReaderBootstrap();
+        if (js.length) [wv evaluateJavaScript:js completionHandler:nil];
+    } @catch(...) {}
+}
+
+static int gWebSeen = 0;
+static void ADWalkWebViews(UIView *v){
+    @try {
+        if ([v isKindOfClass:[WKWebView class]]){ gWebSeen++; ADEnableDarkReaderIn((WKWebView *)v); }
+        for (UIView *s in v.subviews) ADWalkWebViews(s);
+    } @catch(...) {}
+}
+static void ADInjectAllWebViews(void){
+    @try {
+        gWebSeen = 0;
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *w in ((UIWindowScene *)sc).windows) ADWalkWebViews(w);
+        }
+        static int lastReported = -1;
+        if (gWebSeen != lastReported){ ADLog(@"web views themed: %d", gWebSeen); lastReported = gWebSeen; }
+    } @catch(...) {}
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// WKUserContentController — restore our script the moment Amazon strips it.
+// ────────────────────────────────────────────────────────────────────────────────
+// The binary exports removeAllUserScripts and AMIPrewarmWebviewTask: Amazon prewarms
+// web views and clears their user scripts on reuse. That is why 'noflag' recurred on
+// every navigation no matter how many times we healed the current document — the
+// documentStart hook was being removed behind us, so each new page painted white
+// before the repair could land. Re-adding immediately after the strip means the next
+// document is themed at documentStart, before first paint, so there is no white gap
+// at all rather than a gap we race to patch.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook WKUserContentController
+- (void)removeAllUserScripts {
+    %orig;
+    @try {
+        if (!gP.enabled || !gP.webDarkReader) return;
+        NSString *boot = ADDarkReaderBootstrap();
+        Class WKUS = NSClassFromString(@"WKUserScript");
+        if (!boot.length || !WKUS) return;
+        WKUserScript *us = [[WKUS alloc] initWithSource:boot
+                                          injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                       forMainFrameOnly:NO];
+        [self addUserScript:us];
+        ADLog(@"web: user script restored after removeAllUserScripts");
+    } @catch(...) {}
+}
+%end
+
+%hook WKWebView
+- (id)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)cfg {
+    @try {
+        if (gP.enabled && gP.webDarkReader && cfg && cfg.userContentController){
+            NSString *js = ADDarkReaderBootstrap();
+            Class WKUS = NSClassFromString(@"WKUserScript");
+            if (js.length && WKUS){
+                WKUserScript *us = [[WKUS alloc] initWithSource:js
+                                                  injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                               forMainFrameOnly:NO];
+                [cfg.userContentController addUserScript:us];
+            }
+        }
+    } @catch(...) {}
+    return %orig;
+}
+- (void)didMoveToWindow {
+    %orig;
+    @try {
+        if (!self.window || !gP.enabled || !gP.webDarkReader) return;
+        // Paint the web view's own backdrop dark up front so the white page has
+        // nothing to flash before Dark Reader paints the DOM. Cheap and idempotent.
+        self.opaque = NO;
+        self.backgroundColor = ADColorFromHex(gP.bgHex);
+        @try { [self setValue:ADColorFromHex(gP.bgHex) forKey:@"underPageBackgroundColor"]; } @catch(...) {}
+        // Attach a documentStart user-script even to pre-initialised web views (e.g. the
+        // warmed gateway) so a pull-to-refresh re-applies Dark Reader on the next load.
+        static const void *kUS = &kUS;
+        if (!objc_getAssociatedObject(self, kUS)){
+            NSString *js = ADDarkReaderBootstrap();
+            Class WKUS = NSClassFromString(@"WKUserScript");
+            WKUserContentController *ucc = self.configuration.userContentController;
+            if (js.length && WKUS && ucc){
+                WKUserScript *us = [[WKUS alloc] initWithSource:js
+                                                  injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                               forMainFrameOnly:NO];
+                [ucc addUserScript:us];
+            }
+            objc_setAssociatedObject(self, kUS, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        ADBootstrapDarkReaderIn(self); // engine into the already-rendered document (idempotent)
+    } @catch(...) {}
+}
+- (void)webView:(WKWebView *)wv didFinishNavigation:(id)nav {
+    %orig;
+    ADEnableDarkReaderIn(self);
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 2 — NATIVE CHROME via Amazon's own dark theme (flip the Weblab gate)
+// ════════════════════════════════════════════════════════════════════════════════
+
+// Force the two computed booleans the whole native theme keys off of.
+%hook ANXDarkModeServiceImpl
+- (BOOL)isDarkModeExperienceEnabled { if (gP.enabled && gP.nativeTheme) return YES; return %orig;
+}
+- (BOOL)isDarkModeExperienceActive  { if (gP.enabled && gP.nativeTheme) return YES; return %orig;
+}
+- (BOOL)systemDarkModeActive        { if (gP.enabled && gP.nativeTheme) return YES; return %orig;
+}
+%end
+
+// Lock the Weblab treatment for the dark experiment so every downstream consumer
+// (skins, tab-bar tokens, RN appearance module) sees the app as dark-enabled.
+// AMIRedstoneWeblabBridgeService is the confirmed bridge; lockWeblab:toTreatment:
+// returns BOOL. We call it once the service exists; guarded and idempotent.
+static void ADLockDarkWeblab(void){
+    if (!gP.enabled || !gP.nativeTheme) return;
+    @try {
+        Class Bridge = NSClassFromString(@"AMIRedstoneWeblabBridgeService");
+        if (!Bridge) return;
+        SEL shared = NSSelectorFromString(@"sharedWeblabService");
+        id svc = nil;
+        if ([Bridge respondsToSelector:shared]) svc = ((id(*)(id,SEL))objc_msgSend)(Bridge, shared);
+        if (!svc) return;
+        SEL lock = NSSelectorFromString(@"lockWeblab:toTreatment:");
+        if ([svc respondsToSelector:lock]){
+            ((void(*)(id,SEL,id,id))objc_msgSend)(svc, lock, @AD_DARK_WEBLAB, @AD_DARK_TREATMENT);
+            ADRaw("[AmazonDark] locked NAVX_DARK_MODE_IOS_1283655 -> " AD_DARK_TREATMENT);
+        }
+    } @catch(...) {}
+}
+
+// Push the appearance preference to dark and broadcast the change so already-rendered
+// chrome re-skins. The preference persists as an NSInteger tri-state
+// (0 system / 1 light / 2 dark, mirroring UIUserInterfaceStyle); we set 2 and also
+// call applyPreference: if present.
+static void ADForceAppearanceDark(void){
+    if (!gP.enabled || !gP.nativeTheme) return;
+    @try {
+        Class PM = NSClassFromString(@"ANXAppearancePreferenceManager");
+        if (PM){
+            SEL save  = NSSelectorFromString(@"savePreference:");
+            SEL apply = NSSelectorFromString(@"applyPreference:");
+            if ([PM respondsToSelector:save])  ((void(*)(id,SEL,long))objc_msgSend)(PM, save, 2);
+            if ([PM respondsToSelector:apply]) ((void(*)(id,SEL,long))objc_msgSend)(PM, apply, 2);
+        }
+        // Fire the documented notification so listeners re-render.
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"ANXAppearanceModeDidChangeNotification"
+                          object:nil
+                        userInfo:@{ @"darkMode": @YES }];
+    } @catch(...) {}
+}
+
+// Make the trait-observer report dark so systemDarkModeActive is naturally YES even
+// if the boolean hook above is bypassed by a code path that re-reads the trait.
+static void ADForceWindowsDarkTrait(void){
+    if (!gP.enabled || !gP.nativeTheme) return;
+    if (@available(iOS 13.0, *)) {
+        @try {
+            for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
+                if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+                for (UIWindow *w in ((UIWindowScene *)sc).windows)
+                    w.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+            }
+        } @catch(...) {}
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3 — NATIVE CONTENT via the Dark Reader colour engine (ADColor.m)
+// ────────────────────────────────────────────────────────────────────────────────
+// This is the part that makes it a *dark mode* rather than an *inversion*.
+//
+// We intercept each colour at the moment the app assigns it and re-map it in HSL
+// space: backgrounds fall toward the dark pole, text and tints rise toward the
+// light pole, borders compress toward the middle. Hue and saturation survive, so
+// Amazon orange stays orange and the blue links stay blue — they just sit at a
+// lightness that works on a dark surface.
+//
+// The critical property: a colour is a *declaration*, never a pixel. We never
+// touch layer.contents, never install a CAFilter, never see a CGImage. Photos,
+// product shots, customer images and app icons are therefore untouched — not
+// because we detect and exempt them, but because they are not on this code path
+// at all. That is the structural fix for the inverted-images bug, and it is why
+// no allowlist of image classes needs maintaining ever again.
+// ════════════════════════════════════════════════════════════════════════════════
+
+// Push the current prefs into the colour engine (also clears its memo cache).
+static void ADSyncColorEngine(void){
+    ADThemeConfig cfg;
+    cfg.brightness = (double)gP.brightness;
+    cfg.contrast   = (double)gP.contrast;
+    cfg.grayscale  = (double)gP.grayscale;
+    cfg.sepia      = (double)gP.sepia;
+    cfg.bgR = 24;  cfg.bgG = 26;  cfg.bgB = 27;
+    cfg.fgR = 232; cfg.fgG = 230; cfg.fgB = 227;
+    ADParseHexInto(gP.bgHex, &cfg.bgR, &cfg.bgG, &cfg.bgB);
+    ADParseHexInto(gP.fgHex, &cfg.fgR, &cfg.fgG, &cfg.fgB);
+    ADColorSetTheme(cfg);
+}
+
+// WebKit renders its own hierarchy and Dark Reader already owns everything inside
+// it. Recolouring WK's internal views would fight the web engine and can blank the
+// compositing layers, so we leave that whole subtree alone.
+static inline BOOL ADIsWebKitOwned(id obj){
+    if (!obj) return NO;
+    const char *n = object_getClassName(obj);
+    if (!n) return NO;
+    if (n[0]=='W' && n[1]=='K') return YES;                 // WKWebView, WKContentView, …
+    if (strncmp(n, "Web", 3) == 0) return YES;              // WebSimpleLayer, WebLayer, …
+    return NO;
+}
+// A CALayer inside WebKit often has no delegate at all, so test the layer itself too.
+static inline BOOL ADLayerIsWebKitOwned(CALayer *l){
+    if (!l) return NO;
+    if (ADIsWebKitOwned(l)) return YES;
+    return ADIsWebKitOwned(l.delegate);
+}
+
+static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
+
+// ─── colours the tweak creates itself ─────────────────────────────────────────
+// Anything we build from the theme is ALREADY the final on-screen value. Running it
+// back through ADModifyUIColor is not idempotent: the foreground curve maps light to
+// dark, so assigning our light foreground to a tint produced a DARK tint. That is
+// what kept every icon dark while the sweep reported it had fixed them.
+//
+// ADIsModifiedUIColor could not catch this. It recognises values the transform has
+// EMITTED; the theme's foreground pole (#e8e6e3) is an INPUT we supply, and the
+// transform's actual output for dark text is a different value (~rgb(222,219,215)),
+// so the pole never appeared in that set.
+static const void *kADOwnColorKey = &kADOwnColorKey;
+static inline BOOL ADIsOwnColor(UIColor *c){
+    return c != nil && objc_getAssociatedObject(c, kADOwnColorKey) != nil;
+}
+static inline UIColor *ADMarkOwnColor(UIColor *c){
+    if (c) objc_setAssociatedObject(c, kADOwnColorKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return c;
+}
+
+// A UIImage counts as template-rendered if UIKit will paint it with tintColor.
+// renderingMode alone is not enough: an asset marked "Template Image" in the
+// catalogue reports UIImageRenderingModeAutomatic and is resolved to template at
+// draw time, so the AlwaysTemplate test walked straight past the app's own icons.
+static const void *kADOrigImageKey = &kADOrigImageKey;
+static UIColor *gAmazonBlue = nil;   // Amazon's own tab accent, captured live
+static BOOL ADIsTabBarItemish(UIView *v);
+// Walk UP. ADIsTabBarItemish names CONTAINER classes, so the image view that actually
+// holds the cart glyph never matches on its own -- only an ancestor does. Declared
+// here rather than next to the sweep because THREE separate paths repaint glyphs and
+// all three need this gate: setImage:, setImage:forState:, and the didMoveToWindow
+// catch-up. v5.21.0 gated the first two and the cart tab stayed white, because the
+// third one was still repainting it.
+static BOOL ADInTabBarChain(UIView *v){
+    int d = 0;
+    while (v && d++ < 12){ if (ADIsTabBarItemish(v)) return YES; v = v.superview; }
+    return NO;
+}
+
+static inline BOOL ADImageIsTemplateish(UIImage *im){
+    if (!im) return NO;
+    if (im.renderingMode == UIImageRenderingModeAlwaysTemplate) return YES;
+    if (im.renderingMode == UIImageRenderingModeAlwaysOriginal) return NO;
+    CGImageRef cg = im.CGImage;
+    if (cg && (CGImageIsMask(cg) || CGImageGetAlphaInfo(cg) == kCGImageAlphaOnly)) return YES;
+    if (im.symbolConfiguration != nil) return YES;   // SF Symbols are always template
+    return NO;
+}
+
+// ─── tab bar colouring ──────────────────────────────────────────────────────────
+// The bar wants COLOUR, not our monochrome foreground: every tab in Amazon's accent
+// blue, the selected one white. The generic setTintColor hook was lightening Amazon's
+// blue to ~0.90 (near white), which is exactly why every tab went white. We capture
+// Amazon's own accent so the shade matches, stop transforming bar tints, and colour
+// each icon explicitly by selection state.
+static UIColor *ADBarBlue(void){
+    if (gAmazonBlue) return gAmazonBlue;
+    return ADColorFromHex("#00A8E1");            // marked-own fallback
+}
+static UIColor *ADBarWhite(void){ return ADColorFromHex(gP.fgHex); }   // marked-own ~white
+static BOOL ADViewIsSelectedInBar(UIView *v){
+    int d = 0;
+    while (v && d++ < 12){
+        if ([v isKindOfClass:[UIControl class]] && ((UIControl *)v).selected) return YES;
+        v = v.superview;
+    }
+    return NO;
+}
+static void ADTintBarIcon(UIImageView *iv, BOOL selected){
+    @try {
+        UIImage *img = iv.image;
+        if (!img) return;
+        // Templatise so the tint takes. A bitmap icon ignores tintColor, which is why
+        // the dark bitmaps stayed dark; a template renders entirely in its tint.
+        if (!ADImageIsTemplateish(img)){
+            UIImage *tpl = [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+            if (tpl){ ADMarkModifiedImage(tpl); iv.image = tpl; }
+        }
+        ((UIView *)iv).tintColor = selected ? ADBarWhite() : ADBarBlue();
+    } @catch(...) {}
+}
+static void ADApplyBarTint(UIView *container, BOOL selected){
+    if (!container) return;
+    @try {
+        if ([container isKindOfClass:[UIImageView class]]) ADTintBarIcon((UIImageView *)container, selected);
+        for (UIView *s in container.subviews) ADApplyBarTint(s, selected);
+    } @catch(...) {}
+}
+
+// ─── UIView / UILabel / controls ──────────────────────────────────────────────────
+%hook UIView
+- (void)setBackgroundColor:(UIColor *)color {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color) || ADIsWebKitOwned(self)) {
+        %orig;
+        return;
+    }
+    @try {
+        // Kill translucent dark veils. A ~50%-opaque dark fill spread over a large
+        // view is a scrim sitting on top of content (the home-tab overlay the probe
+        // named: UIView rgba(0.09,0.10,0.11,0.50)). On a light UI it dims things a
+        // little; on our now-dark UI it just muddies the product cards underneath for
+        // no benefit. If a dark, half-transparent colour lands on a sizeable view,
+        // drop it to clear so the themed content shows through cleanly.
+        CGFloat r,g,b,a;
+        if ([color getRed:&r green:&g blue:&b alpha:&a]){
+            CGFloat lum = 0.2126*r + 0.7152*g + 0.0722*b;
+            if (a > 0.15 && a < 0.85 && lum < 0.25 &&
+                self.bounds.size.width > 120 && self.bounds.size.height > 120){
+                %orig([UIColor clearColor]);
+                return;
+            }
+        }
+        UIColor *m = ADModifyUIColor(color, ADColorRoleBackground);
+        if (!m) m = color;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+- (void)setTintColor:(UIColor *)color {
+    // Tab bar FIRST, before the generic guard below. The blue/white flash was a fight:
+    // we set a tab icon blue, Amazon reset its tint (often to nil -> reverts to the
+    // bar's inherited near-white), our next sweep re-blued it. Overriding every
+    // assignment here -- real colour, nil, or our own -- means Amazon's value never
+    // lands, so there is nothing to flash against. (The old !color guard sat ABOVE
+    // this and swallowed the nil case, which is why it had to move below.)
+    @try {
+        if (ADRecolorOn() && !ADIsWebKitOwned(self) && ADInTabBarChain(self)){
+            if (color && !ADIsOwnColor(color)){
+                CGFloat r,g,b,a;
+                if (!gAmazonBlue && [color getRed:&r green:&g blue:&b alpha:&a]){
+                    CGFloat mx = MAX(r,MAX(g,b)), mn = MIN(r,MIN(g,b));
+                    if ((mx-mn) > 0.15 && b >= r*0.9)
+                        gAmazonBlue = ADMarkOwnColor([UIColor colorWithRed:r green:g blue:b alpha:1.0]);
+                }
+            }
+            if (!ADIsOwnColor(color)){
+                // Resolve to a local -- Logos's %orig tokenizer rejects a nested call
+                // in its arguments, which is what broke the v5.28.0 CI lint.
+                UIColor *want = ADViewIsSelectedInBar(self) ? ADBarWhite() : ADBarBlue();
+                %orig(want);
+                return;
+            }
+            %orig;
+            return;
+        }
+    } @catch(...) {}
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color) || ADIsWebKitOwned(self)) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
+        if (!m) m = color;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook UILabel
+- (void)setTextColor:(UIColor *)color {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color)) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
+        if (!m) m = color;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook UITextView
+- (void)setTextColor:(UIColor *)color {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color)) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
+        if (!m) m = color;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook UITextField
+- (void)setTextColor:(UIColor *)color {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color)) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
+        if (!m) m = color;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook UIButton
+- (void)setTitleColor:(UIColor *)color forState:(UIControlState)state {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color)) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
+        if (!m) m = color;
+        %orig(m, state);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3b — REACT NATIVE TEXT (the "text is almost as dark as the background")
+// ────────────────────────────────────────────────────────────────────────────────
+// This is the piece v5.0.3 was missing. React Native does NOT put text in a UILabel
+// with a settable textColor. RCTParagraphComponentView / RCTTextView hold an
+// NSAttributedString and draw it themselves in drawRect: via
+//   -drawAttributedString:paragraphAttributes:frame:drawHighlightPath:
+// The colour is baked into NSForegroundColorAttributeName runs inside that string,
+// so our UILabel/UITextView textColor hooks never see it. The RN background went
+// dark (UIView/CALayer hooks caught it) while the dark text stayed dark — hence
+// near-invisible labels on the account, cart and Alexa tabs.
+//
+// Fix: intercept the attributed string on its way in, walk every foreground-colour
+// run, and push each through the SAME foreground curve as everything else. Text
+// runs with no explicit colour default to black in RN, so a nil-colour run is
+// treated as black and lifted to the light pole too.
+// ════════════════════════════════════════════════════════════════════════════════
+
+static NSAttributedString *ADRecolorAttributedString(NSAttributedString *in){
+    if (!ADRecolorOn() || in.length == 0) return in;
+    @try {
+        NSMutableAttributedString *m = [in mutableCopy];
+        NSRange full = NSMakeRange(0, m.length);
+        [m enumerateAttribute:NSForegroundColorAttributeName inRange:full
+                      options:0
+                   usingBlock:^(id value, NSRange range, BOOL *stop){
+            @try {
+                UIColor *orig = [value isKindOfClass:[UIColor class]]
+                                ? (UIColor *)value
+                                : [UIColor blackColor];   // RN default text colour
+                UIColor *mod = ADModifyUIColor(orig, ADColorRoleForeground);
+                if (mod) [m addAttribute:NSForegroundColorAttributeName value:mod range:range];
+            } @catch(...) {}
+        }];
+        return m;
+    } @catch(...) { return in; }
+}
+
+// Fabric text (new architecture). Setter lives on RCTParagraphComponentView.
+%hook RCTParagraphComponentView
+- (void)setAttributedText:(NSAttributedString *)attributedText {
+    @try {
+        NSAttributedString *r = ADRecolorAttributedString(attributedText);
+        %orig(r);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+- (void)_setAttributedString:(NSAttributedString *)attributedString {
+    @try {
+        NSAttributedString *r = ADRecolorAttributedString(attributedString);
+        %orig(r);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// Paper text (old architecture) — still present in this binary.
+%hook RCTTextView
+- (void)setTextStorage:(NSTextStorage *)textStorage {
+    @try {
+        if (ADRecolorOn() && textStorage.length){
+            NSRange full = NSMakeRange(0, textStorage.length);
+            [textStorage enumerateAttribute:NSForegroundColorAttributeName inRange:full
+                                    options:0
+                                 usingBlock:^(id value, NSRange range, BOOL *stop){
+                @try {
+                    UIColor *orig = [value isKindOfClass:[UIColor class]]
+                                    ? (UIColor *)value : [UIColor blackColor];
+                    UIColor *mod = ADModifyUIColor(orig, ADColorRoleForeground);
+                    if (mod) [textStorage addAttribute:NSForegroundColorAttributeName
+                                                 value:mod range:range];
+                } @catch(...) {}
+            }];
+        }
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// Some Amazon custom labels vend an attributed string through UILabel directly.
+%hook UILabel
+- (void)setAttributedText:(NSAttributedString *)attributedText {
+    if (!ADRecolorOn() || !attributedText.length) {
+        %orig;
+        return;
+    }
+    @try {
+        NSAttributedString *r = ADRecolorAttributedString(attributedText);
+        %orig(r);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// ─── CALayer: catches React Native (Fabric sets layer colours directly) ───────────
+%hook CALayer
+- (void)setBackgroundColor:(CGColorRef)color {
+    if (!ADRecolorOn() || !color) {
+        %orig;
+        return;
+    }
+    @try {
+        if (ADLayerIsWebKitOwned(self)) {
+            %orig;
+            return;
+        }
+        CGColorRef m = ADModifyCGColor(color, ADColorRoleBackground);
+        if (!m) m = color;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+- (void)setBorderColor:(CGColorRef)color {
+    if (!ADRecolorOn() || !color) {
+        %orig;
+        return;
+    }
+    @try {
+        if (ADLayerIsWebKitOwned(self)) {
+            %orig;
+            return;
+        }
+        CGColorRef m = ADModifyCGColor(color, ADColorRoleBorder);
+        if (!m) m = color;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook CAGradientLayer
+- (void)setColors:(NSArray *)colors {
+    if (!ADRecolorOn() || colors.count == 0) {
+        %orig;
+        return;
+    }
+    @try {
+        NSMutableArray *out = [NSMutableArray arrayWithCapacity:colors.count];
+        for (id c in colors){
+            CGColorRef cg = (__bridge CGColorRef)c;
+            CGColorRef m  = ADModifyCGColor(cg, ADColorRoleBackground);
+            [out addObject:(__bridge id)(m ? m : cg)];
+        }
+        %orig(out);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3e — react-native-linear-gradient (BVLinearGradientLayer)
+// ────────────────────────────────────────────────────────────────────────────────
+// This layer is why a region can render solid white while every hook and the probe
+// swear nothing is white. It is a plain CALayer that paints its gradient in
+// drawInContext: with raw CoreGraphics — so it is NOT a CAGradientLayer (the hook
+// above never sees it), it has no backgroundColor (the probe prints NO-BG), and it
+// never calls [UIColor setFill] (pure CGGradientRef). A white→light-grey RN
+// <LinearGradient> backdrop is therefore invisible to the entire engine and renders
+// as a white sheet. Its colors property is the single choke point: transform the
+// stops with the background curve and the gradient darkens like any other surface,
+// hue preserved for genuinely colourful brand gradients.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook BVLinearGradientLayer
+- (void)setColors:(NSArray *)colors {
+    if (!ADRecolorOn() || colors.count == 0) {
+        %orig;
+        return;
+    }
+    @try {
+        NSMutableArray *out = [NSMutableArray arrayWithCapacity:colors.count];
+        for (id c in colors){
+            if ([c isKindOfClass:[UIColor class]]){
+                UIColor *m = ADModifyUIColor((UIColor *)c, ADColorRoleBackground);
+                [out addObject:(m ? m : c)];
+            } else if (c && CFGetTypeID((__bridge CFTypeRef)c) == CGColorGetTypeID()){
+                CGColorRef m = ADModifyCGColor((__bridge CGColorRef)c, ADColorRoleBackground);
+                [out addObject:(m ? (__bridge id)m : c)];
+            } else {
+                [out addObject:c];
+            }
+        }
+        %orig(out);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// ─── system chrome that has its own switches rather than colours ───────────────────
+%hook UIVisualEffectView
+- (void)setEffect:(UIVisualEffect *)effect {
+    if (!ADRecolorOn()) {
+        %orig;
+        return;
+    }
+    @try {
+        if ([effect isKindOfClass:[UIBlurEffect class]]){
+            %orig([UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark]);
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+- (void)didMoveToWindow {
+    %orig;
+    @try {
+        // The light band behind the status bar and search field is a bar-background
+        // blur whose backdrop paints its own light tint, so forcing the effect dark
+        // in setEffect: is not always enough. Drop a dark fill behind the effect view
+        // when it is bar-sized so the top matches the themed content below it.
+        if (ADRecolorOn() && self.window && self.bounds.size.height < 160){
+            ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex);
+        }
+    } @catch(...) {}
+}
+%end
+
+// _UIBarBackground is the nav/search bar's own backing view; force it dark so the
+// top band matches the themed content below it.
+%hook _UIBarBackground
+- (void)layoutSubviews {
+    %orig;
+    @try {
+        if (gP.enabled) ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex);
+    } @catch(...) {}
+}
+%end
+
+%hook UIScrollView
+- (void)didMoveToWindow {
+    %orig;
+    @try { if (ADRecolorOn() && self.window) self.indicatorStyle = UIScrollViewIndicatorStyleWhite; } @catch(...) {}
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 4 — bottom nav toolbar chrome (the tab bar strip).
+// These Amazon container views sometimes assert an opaque light backdrop AFTER our
+// generic hooks run, so a plain colour swap can be overwritten. Forcing the fill in
+// layoutSubviews (which re-runs on every relayout) makes it stick. Image-safe: only
+// the container's own backgroundColor is touched, never any glyph/icon subview.
+// ════════════════════════════════════════════════════════════════════════════════
+// The tab-bar strip. Force the container dark, but NEVER recurse into its item/icon
+// subviews — those are template-tinted glyphs, and repainting their backgrounds (or
+// the fill landing mid-transition) is what made tabs intermittently vanish. We set
+// the fill only when it is not already our colour, so a fast relayout does not keep
+// re-triggering it.
+static void ADForceBarDark(UIView *bar){
+    if (!gP.enabled || !bar) return;
+    @try {
+        UIColor *want = ADColorFromHex(gP.bgHex);
+        UIColor *have = bar.backgroundColor;
+        CGFloat r1,g1,b1,a1,r2,g2,b2,a2;
+        BOOL same = have &&
+            [have getRed:&r1 green:&g1 blue:&b1 alpha:&a1] &&
+            [want getRed:&r2 green:&g2 blue:&b2 alpha:&a2] &&
+            fabs(r1-r2)<0.01 && fabs(g1-g2)<0.01 && fabs(b1-b2)<0.01 && fabs(a1-a2)<0.01;
+        if (!same) bar.backgroundColor = want;
+    } @catch(...) {}
+}
+%hook CXIStoreModesBottomNavToolbar
+- (void)layoutSubviews {
+    %orig;
+    ADForceBarDark((UIView *)self);
+}
+%end
+%hook CXIStoreModesTabBarView
+- (void)layoutSubviews {
+    %orig;
+    ADForceBarDark((UIView *)self);
+}
+%end
+%hook ANPRetailTabBar
+- (void)layoutSubviews {
+    %orig;
+    ADForceBarDark((UIView *)self);
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3c — drawRect: painting (the gap that left whole panels white)
+// ────────────────────────────────────────────────────────────────────────────────
+// A view that paints itself in drawRect: never assigns a backgroundColor. It calls
+// [someColor setFill] / [someColor set] and fills a rect. Nothing in the UIView or
+// CALayer hooks can see that, so those panels stayed exactly as Amazon drew them —
+// which is what the white "lattice" on the hamburger tab and the white boxes on the
+// account tab are. Routing the paint colours through the same curve fixes the whole
+// class of them at once, without naming a single Amazon class.
+//
+// Images are unaffected: this intercepts *fill/stroke colours*, never image drawing.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook UIColor
+- (void)set {
+    if (!ADRecolorOn()) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(self, ADColorRoleAuto);
+        if (m) {
+            [m set];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+- (void)setFill {
+    if (!ADRecolorOn()) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(self, ADColorRoleAuto);
+        if (m) {
+            [m setFill];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+- (void)setStroke {
+    if (!ADRecolorOn()) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(self, ADColorRoleBorder);
+        if (m) {
+            [m setStroke];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// DIAGNOSTIC PROBE — make the tweak tell us what is still light.
+// ────────────────────────────────────────────────────────────────────────────────
+// Three rounds of inferring from screenshots has not converged, because a white
+// panel can be a UIView background, a drawRect: fill, a UIImage, or a web surface,
+// and they look identical in a photo but need completely different fixes. This walks
+// the live hierarchy and logs the CLASS of anything still rendering light, plus how
+// it is coloured. One line per offender tells us which mechanism to target.
+//
+// Throttled hard: at most one report per screen appearance and capped entries, so it
+// cannot spam the log or cost anything meaningful on the main thread.
+static BOOL  gProbeArmed  = NO;
+static int   gProbeReports = 0;
+// Dedupe by identity rather than capping the number of runs. The old hard cap of 6
+// reports was consumed during launch, so by the time a problem tab was opened the
+// probe had permanently stopped — which is exactly why the hamburger returned no
+// diagnostics. Reporting each distinct offender once keeps it alive indefinitely
+// without spamming.
+static NSMutableSet *gProbeSeen = nil;
+static BOOL ADProbeFirstTime(NSString *key){
+    if (!gProbeSeen) gProbeSeen = [NSMutableSet set];
+    if ([gProbeSeen containsObject:key]) return NO;
+    [gProbeSeen addObject:key];
+    return YES;
+}
+
+static void ADProbeTree(UIView *v, int depth, int *found){
+    if (!v || depth > 40 || *found >= 25) return;
+    @try {
+        if (ADIsWebKitOwned(v)) {
+            ADLog(@"  probe: WEBVIEW %s (Dark Reader territory)", object_getClassName(v));
+            return;
+        }
+        UIColor *bg = v.backgroundColor;
+        if (bg){
+            CGFloat r,g,b,a;
+            if ([bg getRed:&r green:&g blue:&b alpha:&a] && a > 0.2){
+                CGFloat lum = 0.2126*r + 0.7152*g + 0.0722*b;
+                if (lum > 0.55){                     // still light => an offender
+                    NSString *k = [NSString stringWithFormat:@"L%s%.0fx%.0f",
+                                   object_getClassName(v), v.bounds.size.width, v.bounds.size.height];
+                    if (ADProbeFirstTime(k)){
+                        ADLog(@"  probe: LIGHT bg %s rgba(%.2f,%.2f,%.2f,%.2f) frame=%.0fx%.0f",
+                              object_getClassName(v), r,g,b,a,
+                              v.bounds.size.width, v.bounds.size.height);
+                        (*found)++;
+                    }
+                } else if (a < 0.95 && lum < 0.35 && v.bounds.size.width > 100){
+                    // Dark AND translucent over a large area = the veil on the home tab.
+                    NSString *k = [NSString stringWithFormat:@"O%s%.0fx%.0f",
+                                   object_getClassName(v), v.bounds.size.width, v.bounds.size.height];
+                    if (ADProbeFirstTime(k)){
+                        ADLog(@"  probe: DARK-OVERLAY %s rgba(%.2f,%.2f,%.2f,%.2f) frame=%.0fx%.0f",
+                              object_getClassName(v), r,g,b,a,
+                              v.bounds.size.width, v.bounds.size.height);
+                        (*found)++;
+                    }
+                }
+            }
+        } else if (v.bounds.size.width > 150 && v.bounds.size.height > 60 && !v.hidden) {
+            // No backgroundColor at all but big and visible => probably drawRect: or a
+            // UIImageView. Naming it tells us which of the two to chase.
+            BOOL isImg = [v isKindOfClass:[UIImageView class]];
+            // If it draws itself, does the class override drawRect: ? That is the
+            // signal for [UIColor set]/setFill painting our hooks should be catching.
+            BOOL drawsSelf = [v methodForSelector:@selector(drawRect:)] !=
+                             [UIView instanceMethodForSelector:@selector(drawRect:)];
+            // For image views, is the image a tiny resizable slice (a background) or a
+            // real picture? Tiny + tiled = a themeable chrome asset.
+            const char *imgInfo = "";
+            if (isImg){
+                UIImage *im = ((UIImageView *)v).image;
+                if (im && (im.size.width < 8 || im.size.height < 8)) imgInfo = " TINY-STRETCH-IMG";
+            }
+            NSString *k = [NSString stringWithFormat:@"N%s%.0fx%.0f",
+                           object_getClassName(v), v.bounds.size.width, v.bounds.size.height];
+            if (ADProbeFirstTime(k)){
+                ADLog(@"  probe: NO-BG %s%s%s%s frame=%.0fx%.0f",
+                      object_getClassName(v),
+                      isImg ? " IMAGEVIEW" : "",
+                      drawsSelf ? " DRAWS-SELF" : "",
+                      imgInfo,
+                      v.bounds.size.width, v.bounds.size.height);
+                (*found)++;
+            }
+        }
+        for (UIView *s in v.subviews) ADProbeTree(s, depth+1, found);
+    } @catch(...) {}
+}
+
+static void ADRunProbe(void){
+    if (!gProbeArmed) return;
+    gProbeArmed = NO;
+    gProbeReports++;
+    @try {
+        int found = 0;
+        ADLog(@"── probe #%d: scanning for surfaces still light ──", gProbeReports);
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *w in ((UIWindowScene *)sc).windows) ADProbeTree(w, 0, &found);
+        }
+        ADLog(@"── probe #%d complete: %d offender(s) ──", gProbeReports, found);
+    } @catch(...) {}
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3d — REACT NATIVE VIEW BACKGROUNDS
+// ────────────────────────────────────────────────────────────────────────────────
+// The probe proved these were unreachable: RCTScrollView and the account-menu tiles
+// held pure opaque white through every sweep. Two reasons, both structural.
+//
+//  1. Obj-C dispatch. RCTView overrides setBackgroundColor:, so a %hook on UIView
+//     is simply never consulted for it — the subclass implementation wins.
+//  2. RN's override early-returns when the incoming colour isEqual: the stored one.
+//
+// Hooking the RN classes themselves fixes (1); the sweep now passing a transformed
+// colour fixes (2). Both are needed — the hook catches live updates, the sweep
+// catches anything built before we attached.
+//
+// Still image-safe: these set a view's own background fill, never layer.contents.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook RCTView
+- (void)setBackgroundColor:(UIColor *)backgroundColor {
+    if (!ADRecolorOn() || !backgroundColor) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(backgroundColor, ADColorRoleBackground);
+        if (!m) m = backgroundColor;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook RCTScrollView
+- (void)setBackgroundColor:(UIColor *)backgroundColor {
+    if (!ADRecolorOn() || !backgroundColor) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(backgroundColor, ADColorRoleBackground);
+        if (!m) m = backgroundColor;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook RCTViewComponentView
+- (void)setBackgroundColor:(UIColor *)backgroundColor {
+    if (!ADRecolorOn() || !backgroundColor) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(backgroundColor, ADColorRoleBackground);
+        if (!m) m = backgroundColor;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// RN text colour also arrives as a discrete attribute object on the Paper path.
+%hook RCTTextAttributes
+- (void)setForegroundColor:(UIColor *)foregroundColor {
+    if (!ADRecolorOn() || !foregroundColor) {
+        %orig;
+        return;
+    }
+    @try {
+        UIColor *m = ADModifyUIColor(foregroundColor, ADColorRoleForeground);
+        if (!m) m = foregroundColor;
+        %orig(m);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 5 — image backdrops (native half of the same idea as the web CSS above).
+// ────────────────────────────────────────────────────────────────────────────────
+// Setting a dark backgroundColor on an image view shows through wherever the image
+// has TRANSPARENT pixels — cut-out product shots, icons, logos with alpha. It is
+// completely hidden behind an opaque JPEG, so it is a no-op on ordinary photos
+// rather than a risk to them.
+//
+// What this deliberately does NOT do: touch layer.contents or any pixel of the
+// image. White baked into a JPEG stays exactly as photographed. That limitation is
+// the whole reason images have survived this project intact, and it is not worth
+// trading away for this.
+// ════════════════════════════════════════════════════════════════════════════════
+%hook UIImageView
+- (void)didMoveToWindow {
+    %orig;
+    @try {
+        if (!gP.enabled || !self.window || ADIsWebKitOwned(self)) return;
+        // The tab bar owns its own colours. Both branches below repaint: the backdrop
+        // drops a dark panel behind any transparent artwork, and the catch-up
+        // glyphifies and re-tints. Between them that is the white cart icon and the
+        // nav items that read as blank until tapped -- tapping installs the selected
+        // artwork through a path that already ran before injection.
+        // The dump settled the tab bar: unselected icons are dark BITMAPS (dark=1,
+        // tmpl=0) rendering invisibly on the dark bar. Convert them like any glyph,
+        // but skip the backdrop and the tint pin so the bar's own tint -- selected
+        // blue, unselected grey -- still drives their colour.
+        if (ADInTabBarChain(self)){
+            ADTintBarIcon(self, ADViewIsSelectedInBar(self));
+            return;                                      // bar icons are fully handled
+        }
+
+        // (1) Backdrop for TRANSPARENT images — cheap, always-on-when-enabled.
+        if (gP.imageBackdrop){
+            UIImage *img = self.image;
+            if (img && img.CGImage){
+                CGImageAlphaInfo a = CGImageGetAlphaInfo(img.CGImage);
+                BOOL hasAlpha = (a == kCGImageAlphaFirst || a == kCGImageAlphaLast ||
+                                 a == kCGImageAlphaPremultipliedFirst ||
+                                 a == kCGImageAlphaPremultipliedLast);
+                if (hasAlpha && !self.backgroundColor)
+                    ((UIView *)self).backgroundColor = ADColorFromHex(gP.bgHex);
+            }
+        }
+
+        // (1b) Catch-up for glyphs assigned BEFORE our hooks were installed. New
+        // assignments are handled earlier and more reliably by the setImage: hook.
+        {
+            UIImage *tpl = ADGlyphify(self.image);
+            if (tpl){
+                ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+                self.image = tpl;
+            }
+        }
+
+        // (2) Corner-key white-studio backdrops in OPAQUE photos — pixel work, opt-in.
+        // Off by default: it edits pixels, which everything else here avoids, and a
+        // wrong key looks worse than a white card. Runs on a background queue and
+        // caches per source image so each is processed at most once; if the key
+        // declines (ambiguous / not white-studio) the original is kept untouched.
+        if (gP.imageKeyBackground){
+            UIImage *img = self.image;
+            if (img && img.CGImage && !ADIsModifiedImage(img)){
+                static const void *kKeyed = &kKeyed;
+                if (!objc_getAssociatedObject(img, kKeyed)){
+                    objc_setAssociatedObject(img, kKeyed, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    __weak UIImageView *weakSelf = self;
+                    NSString *hexStr = [NSString stringWithUTF8String:gP.bgHex];
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        @try {
+                            UIImage *keyed = ADKeyWhiteBackground(img, hexStr.UTF8String);
+                            if (!keyed) return;
+                            ADMarkModifiedImage(keyed);
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                @try {
+                                    UIImageView *sv = weakSelf;
+                                    if (sv && sv.image == img) sv.image = keyed;   // still the same image
+                                } @catch(...) {}
+                            });
+                        } @catch(...) {}
+                    });
+                }
+            }
+        }
+    } @catch(...) {}
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 3f — DIRECTLY-DRAWN TEXT (NSString / NSAttributedString draw APIs)
+// ────────────────────────────────────────────────────────────────────────────────
+// The gap left by making the drawRect: paint path one-way in v5.3.1. That change
+// (light fills darken, dark fills untouched) was needed to stop an already-dark
+// backdrop being flipped light — but it means dark text painted through
+// [UIColor set] + drawInRect: is now left dark on a dark background, i.e. invisible.
+//
+// The fix is to intercept where the colour is UNAMBIGUOUSLY text rather than trying
+// to guess intent from a bare fill colour. In these APIs the foreground attribute is
+// text by definition, so pushing it through the foreground curve carries none of the
+// risk that made the generic paint hook one-way: we can never lighten a background
+// here, because a background is never drawn by drawInRect:withAttributes:.
+// ════════════════════════════════════════════════════════════════════════════════
+
+// Return a copy of `attrs` whose foreground colour has been run through the
+// foreground curve. Text with no explicit colour defaults to black, which on a dark
+// surface is the worst case, so that is lifted too.
+static NSDictionary *ADRecolorTextAttrs(NSDictionary *attrs){
+    if (!ADRecolorOn()) return attrs;
+    @try {
+        UIColor *fg = attrs[NSForegroundColorAttributeName];
+        if (fg && ADIsModifiedUIColor(fg)) return attrs;          // already ours
+        UIColor *src = [fg isKindOfClass:[UIColor class]] ? fg : [UIColor blackColor];
+        UIColor *mod = ADModifyUIColor(src, ADColorRoleForeground);
+        if (!mod) return attrs;
+        NSMutableDictionary *m = attrs ? [attrs mutableCopy] : [NSMutableDictionary dictionary];
+        m[NSForegroundColorAttributeName] = mod;
+        return m;
+    } @catch(...) {}
+    return attrs;
+}
+
+%hook NSString
+- (void)drawAtPoint:(CGPoint)point withAttributes:(NSDictionary *)attrs {
+    @try {
+        NSDictionary *a = ADRecolorTextAttrs(attrs);
+        %orig(point, a);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+- (void)drawInRect:(CGRect)rect withAttributes:(NSDictionary *)attrs {
+    @try {
+        NSDictionary *a = ADRecolorTextAttrs(attrs);
+        %orig(rect, a);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+- (void)drawWithRect:(CGRect)rect
+             options:(NSStringDrawingOptions)options
+          attributes:(NSDictionary *)attrs
+             context:(NSStringDrawingContext *)context {
+    @try {
+        NSDictionary *a = ADRecolorTextAttrs(attrs);
+        %orig(rect, options, a, context);
+        return;
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+%hook NSAttributedString
+- (void)drawAtPoint:(CGPoint)point {
+    @try {
+        NSAttributedString *r = ADRecolorAttributedString(self);
+        if (r != self) {
+            [r drawAtPoint:point];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+- (void)drawInRect:(CGRect)rect {
+    @try {
+        NSAttributedString *r = ADRecolorAttributedString(self);
+        if (r != self) {
+            [r drawInRect:rect];
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SURFACE 5b — GLYPH CONVERSION AT ASSIGNMENT TIME
+// ────────────────────────────────────────────────────────────────────────────────
+// Converting glyphs only in didMoveToWindow was too late and too narrow. Any icon
+// whose image is set AFTER the view is already on screen never got converted — the
+// search magnifier once the search UI opens, the filters icon after a search, the
+// recent-searches glyph, the heart on a product cell. It also caused the location
+// pin to flash black: the original dark artwork was displayed first and only
+// repainted when the view moved into the window.
+//
+// Intercepting setImage: fixes both at once. The conversion happens before the
+// image is ever handed to the view, so a late assignment is caught and there is no
+// intermediate frame showing the dark original.
+//
+// Results are cached per UIImage (checked-and-not-a-glyph is remembered too), so a
+// given image is analysed at most once no matter how often it is re-assigned during
+// scrolling.
+static const void *kADGlyphChecked = &kADGlyphChecked;
+
+static UIImage *ADGlyphify(UIImage *img){
+    if (!gP.enabled || !gP.imageBackdrop || !img) return nil;
+    @try {
+        if (ADIsModifiedImage(img)) return nil;                        // already ours
+        if (objc_getAssociatedObject(img, kADGlyphChecked)) return nil; // known non-glyph
+        if (ADImageIsTemplateish(img)) return nil;   // already tinted, not repainted
+        if (!ADIsDarkGlyph(img)){
+            objc_setAssociatedObject(img, kADGlyphChecked, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return nil;
+        }
+        UIImage *tpl = [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        if (!tpl) return nil;
+        ADMarkModifiedImage(tpl);
+        // Keep the original. Every gate so far has been a promise not to convert;
+        // this is the ability to UNDO one, which is what the tab bar actually needs.
+        objc_setAssociatedObject(tpl, kADOrigImageKey, img, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return tpl;
+    } @catch(...) {}
+    return nil;
+}
+
+%hook UIImageView
+- (void)setImage:(UIImage *)image {
+    if (!image || ADIsWebKitOwned(self)) {
+        %orig;
+        return;
+    }
+    // Detached: nothing to walk yet. Defer to didMoveToWindow, where ancestry -- and
+    // therefore the tab-bar test -- is knowable.
+    if (!self.superview && !self.window) {
+        %orig;
+        return;
+    }
+    @try {
+        // THE tab-bar fix. The dump proved unselected tab icons are dark BITMAPS
+        // going invisible on the dark bar, so we still convert them. What we must NOT
+        // do is pin the tint: a converted template inherits the bar's tint, which is
+        // what lets the selected state colour it blue. Pinning fg is what turned the
+        // cart white -- that was the real defect behind four builds of gating, not the
+        // conversion.
+        if (ADInTabBarChain(self)) {
+            %orig;                                       // install the artwork
+            ADTintBarIcon(self, ADViewIsSelectedInBar(self));  // then templatise + colour
+            return;
+        }
+        UIImage *tpl = ADGlyphify(image);
+        if (tpl) {
+            ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+            %orig(tpl);
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// Many of these glyphs are button artwork rather than plain image views — the heart,
+// the filters control, the recent-search rows.
+%hook UIButton
+- (void)setImage:(UIImage *)image forState:(UIControlState)state {
+    if (!image) {
+        %orig;
+        return;
+    }
+    if (!self.superview && !self.window) {
+        %orig;
+        return;
+    }
+    @try {
+        if (ADInTabBarChain(self)) {
+            %orig(image, state);
+            ADApplyBarTint(self, ADViewIsSelectedInBar(self));
+            return;
+        }
+        UIImage *tpl = ADGlyphify(image);
+        if (tpl) {
+            ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+            %orig(tpl, state);
+            return;
+        }
+    } @catch(...) {}
+    %orig;
+}
+%end
+
+// Selection changes after the launch timer stops, so a tap must re-colour the tab
+// itself. setSelected: is the exact event; ADApplyBarTint reads the NEW value.
+%hook UIControl
+- (void)setSelected:(BOOL)selected {
+    %orig;
+    @try { if (ADRecolorOn() && ADInTabBarChain(self)) ADApplyBarTint(self, selected); } @catch(...) {}
+}
+%end
+
+// ─── catch-up sweep ───────────────────────────────────────────────────────────────
+// Views built before our hooks installed (the pre-warmed gateway, the splash stack)
+// already hold light colours. Re-assigning a view's own colour runs it through the
+// hook once; ADModifyUIColor recognises anything it previously emitted, so a view
+// that is swept twice is not darkened twice.
+static BOOL ADIsTabBarItemish(UIView *v){
+    const char *n = object_getClassName(v);
+    if (!n) return NO;
+    return (strstr(n,"BottomNav") || strstr(n,"TabBarItem") ||
+            strstr(n,"TabBar") || strstr(n,"NavToolbar"));
+}
+static int gTabDumpLeft = 16;   // one-shot budget, refreshed on each app launch
+static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
+static int gSwLabelFixed = 0, gSwTemplateSeen = 0, gSwTintFixed = 0;
+static char gSwSample[96] = {0};
+static char gSwTintNow[64] = {0};
+static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
+    if (!v || depth > 60) return;
+    @try {
+        if (ADIsWebKitOwned(v)) return;                 // Dark Reader's territory
+        // Was `return`, which skipped this view AND everything under it -- including
+        // the background fill. That is where the grey boxes behind the nav tabs came
+        // from: an unthemed light fill sitting exactly where we refused to look, and
+        // appearing or not depending on whether that view happened to be installed
+        // for the current tab state. Only the icon and label work needs holding back
+        // here; the fill still has to be darkened like everything else.
+        BOOL tabBarish = inTabBar || ADIsTabBarItemish(v);   // INHERITED, not re-derived
+        if (tabBarish && gTabDumpLeft > 0 &&
+            ([v isKindOfClass:[UIImageView class]] || [v isKindOfClass:[UIButton class]])){
+            @try {
+                UIImage *di = [v isKindOfClass:[UIImageView class]] ? ((UIImageView *)v).image
+                                                                    : ((UIButton *)v).currentImage;
+                UIColor *dt = v.tintColor; CGFloat r,g,b,a; double tl = -1;
+                if (dt && [dt getRed:&r green:&g blue:&b alpha:&a]) tl = 0.2126*r+0.7152*g+0.0722*b;
+                BOOL ownbg = (v.backgroundColor && ADIsOwnColor(v.backgroundColor));
+                UIImage *orig = di ? objc_getAssociatedObject(di, kADOrigImageKey) : nil;
+                ADLog(@"tabdump cls=%s img=%d dark=%d tmpl=%d tint=%.2f rgb=%.2f,%.2f,%.2f sel=%d bg=%d orig=%d",
+                      object_getClassName(v), di?1:0,
+                      di?ADIsDarkGlyph(di):0, (di && ADImageIsTemplateish(di))?1:0,
+                      tl, (tl>=0?r:0),(tl>=0?g:0),(tl>=0?b:0),
+                      ADViewIsSelectedInBar(v)?1:0, ownbg?1:0, orig?1:0);
+                gTabDumpLeft--;
+            } @catch(...) {}
+        }
+        // Thin non-icon bar views: candidates for the selection indicator the user
+        // wants white. Report class/size/background so it can be targeted exactly.
+        if (tabBarish && gTabDumpLeft > 0 &&
+            ![v isKindOfClass:[UIImageView class]] && ![v isKindOfClass:[UIButton class]]){
+            @try {
+                CGFloat hh = v.bounds.size.height, ww = v.bounds.size.width;
+                if (hh > 0 && hh < 8 && ww > 12){
+                    UIColor *bc = v.backgroundColor; double bl = -1; CGFloat br,bgc,bb,ba;
+                    if (bc && [bc getRed:&br green:&bgc blue:&bb alpha:&ba]) bl = 0.2126*br+0.7152*bgc+0.0722*bb;
+                    ADLog(@"tabline cls=%s w=%.0f h=%.1f bg=%.2f", object_getClassName(v), ww, hh, bl);
+                    gTabDumpLeft--;
+                }
+            } @catch(...) {}
+        }
+        if (tabBarish){
+            const char *scn = object_getClassName(v);
+            if (scn && strstr(scn, "BarBackgroundShadow"))
+                ((UIView *)v).backgroundColor = ADBarWhite();   // whiten the top hairline
+        }
+        UIColor *bg = v.backgroundColor;
+        if (bg && !ADIsOwnColor(bg) && !ADIsModifiedUIColor(bg)) {
+            // Assign the TRANSFORMED colour, never the same object back.
+            //
+            // The old code did `v.backgroundColor = bg` and relied on our UIView hook
+            // to convert it in flight. That fails twice over on React Native views:
+            // RCTView overrides setBackgroundColor: (so the UIView hook never runs for
+            // it), and its override early-returns when the new value isEqual: the one
+            // it already holds — so handing back the identical object was a guaranteed
+            // no-op. That is why RCTScrollView and the four 94x39 account-menu tiles
+            // stayed pure white through every sweep.
+            //
+            // Passing a genuinely different colour object satisfies the equality check
+            // and works regardless of whether a subclass overrides the setter.
+            UIColor *m = ADModifyUIColor(bg, ADColorRoleBackground);
+            if (m) v.backgroundColor = m;
+        }
+        // GLYPH RESCUE. Our setImage: hooks only fire when the app calls that setter.
+        // An icon supplied through UIButtonConfiguration (iOS 15+), set during init,
+        // or assigned before injection never triggers them and stays black. Reading
+        // the CURRENT image here catches it regardless of how it got there — measured
+        // on device, the search-pane X and history glyphs were still near-black under
+        // v5.14.0, which means no setter path reached them. ADGlyphify caches both
+        // outcomes, so a view swept repeatedly costs a dictionary lookup.
+        gSwViews++;
+        if ([v isKindOfClass:[UIImageView class]]){
+            @try {
+                UIImageView *iv = (UIImageView *)v;
+                if (iv.image) gSwImgSeen++;
+                if (tabBarish){
+                    ADTintBarIcon(iv, ADViewIsSelectedInBar(iv));
+                } else {
+                if (iv.image && ADImageIsTemplateish(iv.image)){
+                    gSwTemplateSeen++;
+                    UIColor *tint = iv.tintColor;
+                    CGFloat tr,tg,tb,ta;
+                    if (tint && [tint getRed:&tr green:&tg blue:&tb alpha:&ta] &&
+                        (0.2126*tr + 0.7152*tg + 0.0722*tb) < 0.45 && !tabBarish){
+                        ((UIView *)iv).tintColor = ADColorFromHex(gP.fgHex);
+                        gSwTintFixed++;
+                    }
+                    // Read back what a real template icon's tint RESOLVES to, whether
+                    // or not we just changed it. Recording only on the fix path would
+                    // go silent in exactly the steady state we need to inspect.
+                    if (!gSwTintNow[0]){
+                        @try {
+                            CGFloat nr,ng,nb,na;
+                            if ([((UIView *)iv).tintColor getRed:&nr green:&ng blue:&nb alpha:&na])
+                                snprintf(gSwTintNow, sizeof(gSwTintNow), "%.2f,%.2f,%.2f", nr,ng,nb);
+                        } @catch(...) {}
+                    }
+                }
+                UIImage *tpl = ADGlyphify(((UIImageView *)v).image);
+                if (tpl) gSwGlyphFixed++;
+                if (tpl){
+                    ((UIView *)v).tintColor = ADColorFromHex(gP.fgHex);
+                    ((UIImageView *)v).image = tpl;
+                }
+                }
+            } @catch(...) {}
+        } else if ([v isKindOfClass:[UIButton class]]){
+            @try {
+                UIButton *b = (UIButton *)v;
+                if (tabBarish){ ADApplyBarTint(b, ADViewIsSelectedInBar(b)); }
+                else {
+                UIImage *cur = b.currentImage;
+                if (cur && ADImageIsTemplateish(cur)){
+                    gSwTemplateSeen++;
+                    UIColor *tint = b.tintColor;
+                    CGFloat tr,tg,tb,ta;
+                    if (tint && [tint getRed:&tr green:&tg blue:&tb alpha:&ta] &&
+                        (0.2126*tr + 0.7152*tg + 0.0722*tb) < 0.45 && !tabBarish){
+                        ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
+                        gSwTintFixed++;
+                    }
+                }
+                UIImage *tpl = ADGlyphify(cur);
+                if (tpl){
+                    ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
+                    [b setImage:tpl forState:UIControlStateNormal];
+                }
+                }
+            } @catch(...) {}
+        }
+
+        if (!tabBarish && [v isKindOfClass:[UILabel class]]){
+            UILabel *l = (UILabel *)v;
+            UIColor *tc = l.textColor;
+            @try {
+                CGFloat rr,gg,bb,aa;
+                if (tc && [tc getRed:&rr green:&gg blue:&bb alpha:&aa] &&
+                    (0.2126*rr+0.7152*gg+0.0722*bb) < 0.30) gSwDarkLabels++;
+            } @catch(...) {}
+            if (tc && !ADIsModifiedUIColor(tc)) {
+                UIColor *mt = ADModifyUIColor(tc, ADColorRoleForeground);
+                if (mt) { l.textColor = mt; gSwLabelFixed++; }
+                else if (!gSwSample[0]) {
+                    // Record ONE declined label so we can see what it actually is.
+                    @try {
+                        CGFloat r2,g2,b2,a2;
+                        BOOL ok = [tc getRed:&r2 green:&g2 blue:&b2 alpha:&a2];
+                        snprintf(gSwSample, sizeof(gSwSample), "%s rgba=%s%.2f,%.2f,%.2f,%.2f",
+                                 object_getClassName(l), ok ? "" : "UNREADABLE ",
+                                 ok?r2:0, ok?g2:0, ok?b2:0, ok?a2:0);
+                    } @catch(...) {}
+                }
+            }
+        } else if ([v respondsToSelector:@selector(textColor)] &&
+                   [v respondsToSelector:@selector(setTextColor:)]) {
+            // Any other view exposing textColor — UITextView/UITextField and Amazon's
+            // own label subclasses. Needed because our setter hooks only fire when the
+            // app ASSIGNS a colour: a label that never sets one and inherits the
+            // default black is never intercepted, so the sweep is its only chance.
+            // Measured on device: 'Search with photo' was sitting at pure rgb(0,0,0).
+            @try {
+                UIColor *tc = [(id)v textColor];
+                if (tc && !ADIsModifiedUIColor(tc)){
+                    UIColor *mt = ADModifyUIColor(tc, ADColorRoleForeground);
+                    if (mt) [(id)v setTextColor:mt];
+                }
+            } @catch(...) {}
+        }
+        if (!tabBarish && [v isKindOfClass:[UIButton class]]){
+            // Button titles follow the same rule, and a button whose title colour was
+            // never explicitly set is exactly the case the setTitleColor: hook cannot see.
+            @try {
+                UIButton *b = (UIButton *)v;
+                UIColor *tc = b.titleLabel.textColor;
+                if (tc && !ADIsModifiedUIColor(tc)){
+                    UIColor *mt = ADModifyUIColor(tc, ADColorRoleForeground);
+                    if (mt) [b setTitleColor:mt forState:UIControlStateNormal];
+                }
+            } @catch(...) {}
+        }
+        for (UIView *s in v.subviews) ADSweepViewTree(s, depth + 1, tabBarish);
+    } @catch(...) {}
+}
+// ─── sweep a cell as it comes into view ───────────────────────────────────────────
+// The launch timer stops after ~40s by design, so content built later is only
+// corrected when some unrelated event happens to fire a sweep. That is the "dark at
+// first, correct once you have been scrolling a while" lag on the home feed: the
+// transform is right, it is just arriving late.
+//
+// didMoveToWindow is the wrong moment -- a REUSED cell never leaves the window, so
+// it would fire on first appearance and never again, which is exactly the scrolling
+// case we need. layoutSubviews fires after the cell is reconfigured, so the colours
+// we are about to read are the final ones. Guarded by a per-reuse flag cleared in
+// prepareForReuse, so each cell is swept once per reuse cycle rather than on every
+// layout pass.
+static const void *kADCellSwept = &kADCellSwept;
+
+%hook UICollectionViewCell
+- (void)prepareForReuse {
+    %orig;
+    objc_setAssociatedObject(self, kADCellSwept, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+- (void)layoutSubviews {
+    %orig;
+    @try {
+        if (!ADRecolorOn() || !self.window) return;
+        if (objc_getAssociatedObject(self, kADCellSwept)) return;
+        objc_setAssociatedObject(self, kADCellSwept, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // Seed from real ancestry. Passing NO restarted the walk mid-tree with the
+        // inherited flag cleared, so a tab bar built out of collection view cells had
+        // its whole subtree treated as ordinary content -- undoing the v5.19.1 fix
+        // for exactly the views it was meant to protect.
+        ADSweepViewTree(self, 0, ADInTabBarChain(self));
+    } @catch(...) {}
+}
+%end
+
+%hook UITableViewCell
+- (void)prepareForReuse {
+    %orig;
+    objc_setAssociatedObject(self, kADCellSwept, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+- (void)layoutSubviews {
+    %orig;
+    @try {
+        if (!ADRecolorOn() || !self.window) return;
+        if (objc_getAssociatedObject(self, kADCellSwept)) return;
+        objc_setAssociatedObject(self, kADCellSwept, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ADSweepViewTree(self, 0, ADInTabBarChain(self));
+    } @catch(...) {}
+}
+%end
+
+static void ADSweepAllWindows(void){
+    if (!ADRecolorOn()) return;
+    @try {
+        int nwin = 0;
+        gSwViews = gSwImgSeen = gSwGlyphFixed = gSwDarkLabels = gSwLabelFixed = 0;
+        gSwTemplateSeen = gSwTintFixed = 0;
+        gSwSample[0] = 0;
+        gSwTintNow[0] = 0;
+        for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *w in ((UIWindowScene *)sc).windows){ nwin++; ADSweepViewTree(w, 0, NO); }
+        }
+        static NSString *last = nil;
+        NSString *now = [NSString stringWithFormat:
+                         @"win=%d views=%d img=%d tmpl=%d tintFixed=%d glyphFixed=%d darkLabels=%d labelFixed=%d%s%s%s%s",
+                         nwin, gSwViews, gSwImgSeen, gSwTemplateSeen, gSwTintFixed,
+                         gSwGlyphFixed, gSwDarkLabels, gSwLabelFixed,
+                         gSwSample[0]  ? " declined=" : "", gSwSample[0]  ? gSwSample  : "",
+                         gSwTintNow[0] ? " tintNow="  : "", gSwTintNow[0] ? gSwTintNow : ""];
+        if (!last || ![last isEqualToString:now]){ last = now; ADLog(@"sweep %@", now); }
+    } @catch(...) {}
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Splash: while Dark Reader / native theme spin up, keep the launch screen dark so
+// there is no white flash. Set the splash VC's own view backgroundColor (no invert).
+// ════════════════════════════════════════════════════════════════════════════════
+static UIColor *ADColorFromHex(const char *hex){
+    unsigned int r=24,g=26,b=27;
+    if (hex && hex[0]=='#') sscanf(hex+1, "%02x%02x%02x", &r,&g,&b);
+    // Marked as ours: this is a finished theme colour, not an app colour awaiting
+    // transformation. Without the mark, handing it to tintColor ran it through the
+    // foreground curve and came back dark.
+    return ADMarkOwnColor([UIColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:1.0]);
+}
+static void ADDarkenSplash(UIViewController *vc){
+    if (!gP.enabled) return;
+    @try { UIView *v = vc.view; if (v) v.backgroundColor = ADColorFromHex(gP.bgHex); } @catch(...) {}
+}
+%hook AXUSplashScreenViewController
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ADDarkenSplash(self);
+}
+- (void)viewDidAppear:(BOOL)a {
+    %orig;
+    ADDarkenSplash(self);
+}
+%end
+%hook TezBaseSplashScreenViewController
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ADDarkenSplash(self);
+}
+- (void)viewDidAppear:(BOOL)a {
+    %orig;
+    ADDarkenSplash(self);
+}
+%end
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Periodic re-apply. Web tabs re-render their DOM on back-navigation / pull-to-refresh
+// and can drop Dark Reader; re-enabling is idempotent. Native theme re-broadcast is
+// cheap. Timer self-reschedules with a gentle cadence.
+// ════════════════════════════════════════════════════════════════════════════════
+static void ADSweep(void){
+    ADForceWindowsDarkTrait();
+    ADInjectAllWebViews();
+    ADSweepAllWindows();
+}
+
+// ─── decaying launch timer (bounded) ──────────────────────────────────────────────
+// Catches views built before injection. It stops after the launch window, but that
+// no longer leaves later tabs white: new web views re-theme themselves on mount
+// (WKWebView didMoveToWindow) and on the RN tab-switch hook below, and native views
+// are themed at assignment. So this timer is purely a launch-time backstop.
+static int gSweepTicks = 0;
+static void ADStartTimer(void){
+    if (gSweepTicks++ > 20) {           // ~40s, then done — events take over
+        ADRaw("[AmazonDark] launch sweeps complete; event-driven from here");
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2.0*NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{ ADSweep(); ADStartTimer(); });
+}
+
+// ─── event-driven re-theme on tab / screen change (kills the white flash) ──────────
+// The flashing you saw is a NEW web view being mounted for the tab you switch to:
+// for a few frames it shows its own white page before Dark Reader paints the DOM,
+// and if the launch timer had already stopped, nothing re-applied. Rather than run
+// a forever-timer, we re-theme exactly when the view hierarchy changes. A short
+// coalesced burst (0 / 60 / 200 / 500 ms) covers the mount-to-first-paint window
+// without a standing cost.
+static void ADReapplyBurst(void){
+    static const int64_t delays_ms[] = {0, 60, 200, 500};
+    for (int i = 0; i < 4; i++){
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delays_ms[i]*1000000LL),
+            dispatch_get_main_queue(), ^{ @try {
+                ADForceWindowsDarkTrait();
+                ADInjectAllWebViews();
+                ADSweepAllWindows();
+            } @catch(...) {} });
+    }
+}
+
+// UIViewController appearance is the most reliable, arch-agnostic signal for a tab
+// switch or push. Gate to controllers that actually host content so we do not fire
+// the burst for every cell-sized child VC.
+%hook UIViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    @try {
+        if (!ADRecolorOn()) return;
+        if (self.view.window && self.view.bounds.size.width > 200){
+            NSString *vcKey = [NSString stringWithUTF8String:object_getClassName(self)];
+            static NSMutableSet *vcSeen = nil;
+            if (!vcSeen) vcSeen = [NSMutableSet set];
+            if (![vcSeen containsObject:vcKey]){
+                [vcSeen addObject:vcKey];
+                ADLog(@"screen: %@", vcKey);
+            }
+            gProbeArmed = YES;
+            ADReapplyBurst();
+            // Probe after the burst has settled, so we only report genuine hold-outs.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 900*1000000LL),
+                dispatch_get_main_queue(), ^{ ADRunProbe(); });
+        }
+    } @catch(...) {}
+}
+- (UIStatusBarStyle)preferredStatusBarStyle {
+    if (gP.enabled) return UIStatusBarStyleLightContent;
+    return %orig;
+}
+%end
+
+// ─── live settings reload ─────────────────────────────────────────────────────────
+// ADRootListController posts this Darwin notification on every toggle. Without an
+// observer the setting sat in the plist and did nothing until the app was killed,
+// which made the whole Settings pane look broken.
+//
+// Caveat worth knowing: web surfaces re-theme exactly, because DarkReader.enable()
+// recomputes from the untouched DOM. Native views cannot — the original colour is
+// gone once replaced, so re-running the transform over already-themed views drifts
+// slightly (it converges, it does not blow up). A relaunch gives an exact result.
+static void ADPrefsChanged(CFNotificationCenterRef center, void *observer,
+                           CFStringRef name, const void *object,
+                           CFDictionaryRef userInfo) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            ADLoadPrefs();              // also re-syncs + clears the colour cache
+            ADRaw("[AmazonDark] prefs reloaded (Darwin notification)");
+            ADForceWindowsDarkTrait();
+            ADInjectAllWebViews();      // exact re-theme on web
+            ADSweepAllWindows();        // best-effort re-theme on native
+        } @catch(...) {}
+    });
+}
+
+// Foreground: a backgrounded app can be re-laid-out by the system, and web tabs may
+// have been reclaimed. One sweep on return is far cheaper than a forever-timer.
+static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
+                              CFStringRef name, const void *object,
+                              CFDictionaryRef userInfo) {
+    dispatch_async(dispatch_get_main_queue(), ^{ @try { ADSweep(); } @catch(...) {} });
+}
+
+// ─── %ctor : Obj-C-free. Process guard + open log + %init + schedule real work. ────
+%ctor {
+    if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
+    ADOpenLog();
+    ADRaw("[AmazonDark] v5.18.0 init (DarkReader web + native colour engine)");
+    %init;
+    ADRaw("[AmazonDark] hooks registered");
+    {
+        const char *names[] = {"RCTParagraphComponentView","RCTTextView","RCTViewComponentView",
+                               "RCTScrollView","RCTTextAttributes",
+                               "CXIStoreModesBottomNavToolbar","CXIStoreModesTabBarView",
+                               "ANPRetailTabBar","ANXDarkModeServiceImpl"};
+        for (unsigned i = 0; i < sizeof(names)/sizeof(names[0]); i++){
+            char buf[160];
+            snprintf(buf, sizeof(buf), "[AmazonDark] class %s: %s",
+                     names[i], objc_getClass(names[i]) ? "FOUND" : "MISSING (hook inert)");
+            ADRaw(buf);
+        }
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ADLoadPrefs();
+        ADLockDarkWeblab();
+        ADForceAppearanceDark();
+        ADForceWindowsDarkTrait();
+        ADInjectAllWebViews();
+        ADSweepAllWindows();
+    });
+    // Escalating sweeps to catch late-initialised services/web views (0.2s..~10s).
+    for (double d = 0.2; d <= 10.0; d *= 1.6){
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d*NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+                ADLockDarkWeblab();
+                ADForceAppearanceDark();
+                ADSweep();
+            });
+    }
+    // Live settings reload + foreground re-apply.
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL, ADPrefsChanged,
+        CFSTR("com.colindavidr.amazondark/prefs-changed"),
+        NULL, CFNotificationSuspensionBehaviorCoalesce);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(),
+        NULL, ADAppForegrounded,
+        (__bridge CFStringRef)UIApplicationWillEnterForegroundNotification,
+        NULL, CFNotificationSuspensionBehaviorCoalesce);
+
+    ADStartTimer();
+}
+
+#pragma clang diagnostic pop

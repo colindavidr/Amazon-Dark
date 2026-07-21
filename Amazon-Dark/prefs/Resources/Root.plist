@@ -1,0 +1,28 @@
+{
+    items = (
+        { cell = PSGroupCell; label = "AmazonDark — True Dark Mode"; footerText = "Dark Reader themes the web parts of Amazon (Home, Cart, product, search) like the NOIR extension — real dark colors, and your product photos are left untouched. Amazon's own native dark theme is used for the tab bar and chrome."; },
+
+        { cell = PSSwitchCell; label = "Enabled"; key = "enabled"; default = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+
+        { cell = PSGroupCell; label = "Surfaces"; },
+        { cell = PSSwitchCell; label = "Dark Reader in web views"; key = "webDarkReader"; default = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+        { cell = PSSwitchCell; label = "Force Amazon native dark theme"; key = "nativeTheme"; default = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+        { cell = PSSwitchCell; label = "Recolor native content"; key = "nativeRecolor"; default = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+        { cell = PSSwitchCell; label = "Dark backdrop behind images"; key = "imageBackdrop"; default = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+        { cell = PSSwitchCell; label = "Darken white photo backgrounds (experimental)"; key = "imageKeyBackground"; default = 0; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+
+        { cell = PSGroupCell; label = "Theme"; footerText = "Applies to web and native surfaces alike — both run the same Dark Reader color algorithm. 100 = neutral."; },
+        { cell = PSSliderCell; key = "brightness"; default = 100; min = 50; max = 150; showValue = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+        { cell = PSSliderCell; key = "contrast";   default = 100; min = 50; max = 150; showValue = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+        { cell = PSSliderCell; key = "sepia";      default = 0;   min = 0;  max = 100; showValue = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+        { cell = PSSliderCell; key = "grayscale";  default = 0;   min = 0;  max = 100; showValue = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+
+        { cell = PSGroupCell; label = "Colors"; footerText = "Hex colors, e.g. #181a1b. Background is the dark pole every background color is pulled toward; Text is the light pole for labels and icon tints. Try #000000 background for an OLED-black look."; },
+        { cell = PSEditTextCell; label = "Background"; key = "bgHex"; default = "#181a1b"; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+        { cell = PSEditTextCell; label = "Text";       key = "fgHex"; default = "#e8e6e3"; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
+
+        { cell = PSGroupCell; footerText = "Changes apply the next time you foreground Amazon. If a surface looks wrong, force-quit and relaunch Amazon."; },
+        { cell = PSButtonCell; label = "AmazonDark on GitHub"; action = "openGitHub"; },
+    );
+    title = "AmazonDark";
+}

@@ -1,0 +1,10 @@
+{
+    entry = {
+        bundle = ADPrefs;
+        cell = PSLinkCell;
+        detail = ADRootListController;
+        icon = "icon.png";
+        isController = 1;
+        label = AmazonDark;
+    };
+}
