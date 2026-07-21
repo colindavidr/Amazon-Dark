@@ -338,7 +338,11 @@ static NSString *ADDarkReaderBootstrap(void){
            // format argument through two call sites.
            "var BG='rgb(24,26,27)';try{var hb=getComputedStyle(document.documentElement).backgroundColor;"
              "var hl=lum(hb);if(hl!==null&&hl<0.25)BG=hb;}catch(e){}"
-           "var SKIP=/star|prime|logo|flag|swatch|thumb|sponsor/i;"
+           "var SKIP=/star|prime|logo|flag|swatch|thumb|sponsor|pill-image|product-image|photo/i;"           // Classes the probe confirmed are monochrome UI glyphs. These get a
+           // looser size cap, because the heart measures 33x33 against a 32 limit and
+           // was failing by a single pixel, while sbs-pill-image at 34x34 is a product
+           // thumbnail that must keep its colour.
+           "var ICON=/heart|wish|favor|lists-framework|a-icon|icon-|-icon/i;"
            "for(var i=0;i<els.length;i++){var el=els[i];"
              "var cs=getComputedStyle(el);"
              // NO LIGHT PANELS. Anything still measuring light after Dark Reader has
@@ -381,7 +385,8 @@ static NSString *ADDarkReaderBootstrap(void){
                // element's OWN direct text nodes should disqualify it.
                "var ot=false;for(var z=0;z<el.childNodes.length;z++){var nz=el.childNodes[z];"
                  "if(nz.nodeType===3&&nz.nodeValue&&nz.nodeValue.trim()){ot=true;break;}}"
-               "if(gr.width>5&&gr.width<=32&&gr.height>5&&gr.height<=32&&!SKIP.test(cn2)&&!ot){"
+               "var lim=ICON.test(cn2)?40:32;"
+               "if(gr.width>5&&gr.width<=lim&&gr.height>5&&gr.height<=lim&&!SKIP.test(cn2)&&!ot){"
                  "var isI=el.tagName.toLowerCase()==='img';"
                  "var hasB=cs.backgroundImage&&cs.backgroundImage!=='none';"
                  "if(isI||hasB){el.style.setProperty('filter','brightness(0) invert(1)','important');"
@@ -1010,6 +1015,7 @@ static inline UIColor *ADMarkOwnColor(UIColor *c){
 // renderingMode alone is not enough: an asset marked "Template Image" in the
 // catalogue reports UIImageRenderingModeAutomatic and is resolved to template at
 // draw time, so the AlwaysTemplate test walked straight past the app's own icons.
+static const void *kADOrigImageKey = &kADOrigImageKey;
 static BOOL ADIsTabBarItemish(UIView *v);
 // Walk UP. ADIsTabBarItemish names CONTAINER classes, so the image view that actually
 // holds the cart glyph never matches on its own -- only an ancestor does. Declared
@@ -1696,7 +1702,20 @@ static void ADRunProbe(void){
         // glyphifies and re-tints. Between them that is the white cart icon and the
         // nav items that read as blank until tapped -- tapping installs the selected
         // artwork through a path that already ran before injection.
-        if (ADInTabBarChain(self)) return;
+        if (ADInTabBarChain(self)) {
+            // didMoveToWindow is the first moment ancestry is knowable, so it is also
+            // the right moment to undo anything applied while it was not. Restores the
+            // artwork, drops our tint so the bar's own blue is inherited again, and
+            // removes the backdrop panel -- the cause of items reading as blank.
+            @try {
+                UIImage *cur = self.image;
+                UIImage *o = cur ? objc_getAssociatedObject(cur, kADOrigImageKey) : nil;
+                if (o) { self.image = o; ((UIView *)self).tintColor = nil; }
+                if (self.backgroundColor && ADIsOwnColor(self.backgroundColor))
+                    ((UIView *)self).backgroundColor = nil;
+            } @catch(...) {}
+            return;
+        }
 
         // (1) Backdrop for TRANSPARENT images — cheap, always-on-when-enabled.
         if (gP.imageBackdrop){
@@ -1872,6 +1891,9 @@ static UIImage *ADGlyphify(UIImage *img){
         UIImage *tpl = [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
         if (!tpl) return nil;
         ADMarkModifiedImage(tpl);
+        // Keep the original. Every gate so far has been a promise not to convert;
+        // this is the ability to UNDO one, which is what the tab bar actually needs.
+        objc_setAssociatedObject(tpl, kADOrigImageKey, img, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return tpl;
     } @catch(...) {}
     return nil;
@@ -1952,6 +1974,23 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
         // for the current tab state. Only the icon and label work needs holding back
         // here; the fill still has to be darkened like everything else.
         BOOL tabBarish = inTabBar || ADIsTabBarItemish(v);   // INHERITED, not re-derived
+        if (tabBarish){
+            @try {
+                UIImage *cur = nil;
+                if ([v isKindOfClass:[UIImageView class]]) cur = ((UIImageView *)v).image;
+                else if ([v isKindOfClass:[UIButton class]]) cur = ((UIButton *)v).currentImage;
+                UIImage *o = cur ? objc_getAssociatedObject(cur, kADOrigImageKey) : nil;
+                if (o){
+                    if ([v isKindOfClass:[UIImageView class]]) ((UIImageView *)v).image = o;
+                    else [(UIButton *)v setImage:o forState:UIControlStateNormal];
+                    ((UIView *)v).tintColor = nil;
+                }
+                // Clearing this before the fill block below means that block sees nil
+                // and leaves it alone, so the icon backdrop goes without re-theming it.
+                if ([v isKindOfClass:[UIImageView class]] && v.backgroundColor &&
+                    ADIsOwnColor(v.backgroundColor)) v.backgroundColor = nil;
+            } @catch(...) {}
+        }
         UIColor *bg = v.backgroundColor;
         if (bg && !ADIsModifiedUIColor(bg)) {
             // Assign the TRANSFORMED colour, never the same object back.
@@ -2107,7 +2146,11 @@ static const void *kADCellSwept = &kADCellSwept;
         if (!ADRecolorOn() || !self.window) return;
         if (objc_getAssociatedObject(self, kADCellSwept)) return;
         objc_setAssociatedObject(self, kADCellSwept, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ADSweepViewTree(self, 0, NO);
+        // Seed from real ancestry. Passing NO restarted the walk mid-tree with the
+        // inherited flag cleared, so a tab bar built out of collection view cells had
+        // its whole subtree treated as ordinary content -- undoing the v5.19.1 fix
+        // for exactly the views it was meant to protect.
+        ADSweepViewTree(self, 0, ADInTabBarChain(self));
     } @catch(...) {}
 }
 %end
@@ -2123,7 +2166,7 @@ static const void *kADCellSwept = &kADCellSwept;
         if (!ADRecolorOn() || !self.window) return;
         if (objc_getAssociatedObject(self, kADCellSwept)) return;
         objc_setAssociatedObject(self, kADCellSwept, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ADSweepViewTree(self, 0, NO);
+        ADSweepViewTree(self, 0, ADInTabBarChain(self));
     } @catch(...) {}
 }
 %end
