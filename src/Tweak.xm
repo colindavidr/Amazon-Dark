@@ -1717,23 +1717,14 @@ static void ADRunProbe(void){
         // glyphifies and re-tints. Between them that is the white cart icon and the
         // nav items that read as blank until tapped -- tapping installs the selected
         // artwork through a path that already ran before injection.
-        if (ADInTabBarChain(self)) {
-            // didMoveToWindow is the first moment ancestry is knowable, so it is also
-            // the right moment to undo anything applied while it was not. Restores the
-            // artwork, drops our tint so the bar's own blue is inherited again, and
-            // removes the backdrop panel -- the cause of items reading as blank.
-            @try {
-                UIImage *cur = self.image;
-                UIImage *o = cur ? objc_getAssociatedObject(cur, kADOrigImageKey) : nil;
-                if (o) { self.image = o; ((UIView *)self).tintColor = nil; }
-                if (self.backgroundColor && ADIsOwnColor(self.backgroundColor))
-                    ((UIView *)self).backgroundColor = nil;
-            } @catch(...) {}
-            return;
-        }
+        // The dump settled the tab bar: unselected icons are dark BITMAPS (dark=1,
+        // tmpl=0) rendering invisibly on the dark bar. Convert them like any glyph,
+        // but skip the backdrop and the tint pin so the bar's own tint -- selected
+        // blue, unselected grey -- still drives their colour.
+        BOOL inBar = ADInTabBarChain(self);
 
         // (1) Backdrop for TRANSPARENT images — cheap, always-on-when-enabled.
-        if (gP.imageBackdrop){
+        if (!inBar && gP.imageBackdrop){
             UIImage *img = self.image;
             if (img && img.CGImage){
                 CGImageAlphaInfo a = CGImageGetAlphaInfo(img.CGImage);
@@ -1750,7 +1741,7 @@ static void ADRunProbe(void){
         {
             UIImage *tpl = ADGlyphify(self.image);
             if (tpl){
-                ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+                if (!inBar) ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
                 self.image = tpl;
             }
         }
@@ -1916,21 +1907,27 @@ static UIImage *ADGlyphify(UIImage *img){
 
 %hook UIImageView
 - (void)setImage:(UIImage *)image {
-    if (!image || ADIsWebKitOwned(self) || ADInTabBarChain(self)) {
+    if (!image || ADIsWebKitOwned(self)) {
         %orig;
         return;
     }
-    // Not in a hierarchy yet: ADInTabBarChain has nothing to walk, so we cannot know
-    // whether this is tab-bar artwork. Converting now is the guess that turned the
-    // cart icon white. didMoveToWindow does the same job once the chain exists.
+    // Detached: nothing to walk yet. Defer to didMoveToWindow, where ancestry -- and
+    // therefore the tab-bar test -- is knowable.
     if (!self.superview && !self.window) {
         %orig;
         return;
     }
     @try {
+        // THE tab-bar fix. The dump proved unselected tab icons are dark BITMAPS
+        // going invisible on the dark bar, so we still convert them. What we must NOT
+        // do is pin the tint: a converted template inherits the bar's tint, which is
+        // what lets the selected state colour it blue. Pinning fg is what turned the
+        // cart white -- that was the real defect behind four builds of gating, not the
+        // conversion.
+        BOOL inBar = ADInTabBarChain(self);
         UIImage *tpl = ADGlyphify(image);
         if (tpl) {
-            ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+            if (!inBar) ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
             %orig(tpl);
             return;
         }
@@ -1943,7 +1940,7 @@ static UIImage *ADGlyphify(UIImage *img){
 // the filters control, the recent-search rows.
 %hook UIButton
 - (void)setImage:(UIImage *)image forState:(UIControlState)state {
-    if (!image || ADInTabBarChain(self)) {
+    if (!image) {
         %orig;
         return;
     }
@@ -1952,9 +1949,10 @@ static UIImage *ADGlyphify(UIImage *img){
         return;
     }
     @try {
+        BOOL inBar = ADInTabBarChain(self);
         UIImage *tpl = ADGlyphify(image);
         if (tpl) {
-            ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
+            if (!inBar) ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
             %orig(tpl, state);
             return;
         }
@@ -2006,23 +2004,6 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                 gTabDumpLeft--;
             } @catch(...) {}
         }
-        if (tabBarish){
-            @try {
-                UIImage *cur = nil;
-                if ([v isKindOfClass:[UIImageView class]]) cur = ((UIImageView *)v).image;
-                else if ([v isKindOfClass:[UIButton class]]) cur = ((UIButton *)v).currentImage;
-                UIImage *o = cur ? objc_getAssociatedObject(cur, kADOrigImageKey) : nil;
-                if (o){
-                    if ([v isKindOfClass:[UIImageView class]]) ((UIImageView *)v).image = o;
-                    else [(UIButton *)v setImage:o forState:UIControlStateNormal];
-                    ((UIView *)v).tintColor = nil;
-                }
-                // Clearing this before the fill block below means that block sees nil
-                // and leaves it alone, so the icon backdrop goes without re-theming it.
-                if ([v isKindOfClass:[UIImageView class]] && v.backgroundColor &&
-                    ADIsOwnColor(v.backgroundColor)) v.backgroundColor = nil;
-            } @catch(...) {}
-        }
         UIColor *bg = v.backgroundColor;
         if (bg && !ADIsModifiedUIColor(bg)) {
             // Assign the TRANSFORMED colour, never the same object back.
@@ -2048,7 +2029,7 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
         // v5.14.0, which means no setter path reached them. ADGlyphify caches both
         // outcomes, so a view swept repeatedly costs a dictionary lookup.
         gSwViews++;
-        if (!tabBarish && [v isKindOfClass:[UIImageView class]]){
+        if ([v isKindOfClass:[UIImageView class]]){
             @try {
                 UIImageView *iv = (UIImageView *)v;
                 if (iv.image) gSwImgSeen++;
@@ -2057,7 +2038,7 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                     UIColor *tint = iv.tintColor;
                     CGFloat tr,tg,tb,ta;
                     if (tint && [tint getRed:&tr green:&tg blue:&tb alpha:&ta] &&
-                        (0.2126*tr + 0.7152*tg + 0.0722*tb) < 0.45){
+                        (0.2126*tr + 0.7152*tg + 0.0722*tb) < 0.45 && !tabBarish){
                         ((UIView *)iv).tintColor = ADColorFromHex(gP.fgHex);
                         gSwTintFixed++;
                     }
@@ -2075,11 +2056,11 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                 UIImage *tpl = ADGlyphify(((UIImageView *)v).image);
                 if (tpl) gSwGlyphFixed++;
                 if (tpl){
-                    ((UIView *)v).tintColor = ADColorFromHex(gP.fgHex);
+                    if (!tabBarish) ((UIView *)v).tintColor = ADColorFromHex(gP.fgHex);
                     ((UIImageView *)v).image = tpl;
                 }
             } @catch(...) {}
-        } else if (!tabBarish && [v isKindOfClass:[UIButton class]]){
+        } else if ([v isKindOfClass:[UIButton class]]){
             @try {
                 UIButton *b = (UIButton *)v;
                 UIImage *cur = b.currentImage;
@@ -2088,14 +2069,14 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                     UIColor *tint = b.tintColor;
                     CGFloat tr,tg,tb,ta;
                     if (tint && [tint getRed:&tr green:&tg blue:&tb alpha:&ta] &&
-                        (0.2126*tr + 0.7152*tg + 0.0722*tb) < 0.45){
+                        (0.2126*tr + 0.7152*tg + 0.0722*tb) < 0.45 && !tabBarish){
                         ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
                         gSwTintFixed++;
                     }
                 }
                 UIImage *tpl = ADGlyphify(cur);
                 if (tpl){
-                    ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
+                    if (!tabBarish) ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
                     [b setImage:tpl forState:UIControlStateNormal];
                 }
             } @catch(...) {}
