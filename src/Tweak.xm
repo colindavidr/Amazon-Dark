@@ -1161,18 +1161,12 @@ static void ADApplyBarTint(UIView *container, BOOL selected){
     %orig;
 }
 - (void)setTintColor:(UIColor *)color {
-    // Template images (tab-bar glyphs, chevrons, the cart icon) are tinted, not
-    // drawn. Treating tint as foreground is what keeps those icons visible once
-    // the bar behind them goes dark — the failure mode that broke v3.2.1.
-    if (!ADRecolorOn() || !color || ADIsOwnColor(color) || ADIsWebKitOwned(self)) {
-        %orig;
-        return;
-    }
-    // Tab bar FIRST, before the nil/own guards below. The blue/white flash was a
-    // fight: we set a tab icon blue, Amazon reset its tint (often to nil -> reverts to
-    // the bar's inherited near-white), our next sweep re-blued it. Overriding every
+    // Tab bar FIRST, before the generic guard below. The blue/white flash was a fight:
+    // we set a tab icon blue, Amazon reset its tint (often to nil -> reverts to the
+    // bar's inherited near-white), our next sweep re-blued it. Overriding every
     // assignment here -- real colour, nil, or our own -- means Amazon's value never
-    // lands, so there is nothing to flash against.
+    // lands, so there is nothing to flash against. (The old !color guard sat ABOVE
+    // this and swallowed the nil case, which is why it had to move below.)
     @try {
         if (ADRecolorOn() && !ADIsWebKitOwned(self) && ADInTabBarChain(self)){
             if (color && !ADIsOwnColor(color)){
@@ -1184,12 +1178,21 @@ static void ADApplyBarTint(UIView *container, BOOL selected){
                 }
             }
             if (!ADIsOwnColor(color)){
-                %orig(ADViewIsSelectedInBar(self) ? ADBarWhite() : ADBarBlue());
+                // Resolve to a local -- Logos's %orig tokenizer rejects a nested call
+                // in its arguments, which is what broke the v5.28.0 CI lint.
+                UIColor *want = ADViewIsSelectedInBar(self) ? ADBarWhite() : ADBarBlue();
+                %orig(want);
                 return;
             }
             %orig;
             return;
         }
+    } @catch(...) {}
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color) || ADIsWebKitOwned(self)) {
+        %orig;
+        return;
+    }
+    @try {
         UIColor *m = ADModifyUIColor(color, ADColorRoleForeground);
         if (!m) m = color;
         %orig(m);
