@@ -849,10 +849,43 @@ static inline BOOL ADLayerIsWebKitOwned(CALayer *l){
 
 static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 
+// ─── colours the tweak creates itself ─────────────────────────────────────────
+// Anything we build from the theme is ALREADY the final on-screen value. Running it
+// back through ADModifyUIColor is not idempotent: the foreground curve maps light to
+// dark, so assigning our light foreground to a tint produced a DARK tint. That is
+// what kept every icon dark while the sweep reported it had fixed them.
+//
+// ADIsModifiedUIColor could not catch this. It recognises values the transform has
+// EMITTED; the theme's foreground pole (#e8e6e3) is an INPUT we supply, and the
+// transform's actual output for dark text is a different value (~rgb(222,219,215)),
+// so the pole never appeared in that set.
+static const void *kADOwnColorKey = &kADOwnColorKey;
+static inline BOOL ADIsOwnColor(UIColor *c){
+    return c != nil && objc_getAssociatedObject(c, kADOwnColorKey) != nil;
+}
+static inline UIColor *ADMarkOwnColor(UIColor *c){
+    if (c) objc_setAssociatedObject(c, kADOwnColorKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return c;
+}
+
+// A UIImage counts as template-rendered if UIKit will paint it with tintColor.
+// renderingMode alone is not enough: an asset marked "Template Image" in the
+// catalogue reports UIImageRenderingModeAutomatic and is resolved to template at
+// draw time, so the AlwaysTemplate test walked straight past the app's own icons.
+static inline BOOL ADImageIsTemplateish(UIImage *im){
+    if (!im) return NO;
+    if (im.renderingMode == UIImageRenderingModeAlwaysTemplate) return YES;
+    if (im.renderingMode == UIImageRenderingModeAlwaysOriginal) return NO;
+    CGImageRef cg = im.CGImage;
+    if (cg && (CGImageIsMask(cg) || CGImageGetAlphaInfo(cg) == kCGImageAlphaOnly)) return YES;
+    if (im.symbolConfiguration != nil) return YES;   // SF Symbols are always template
+    return NO;
+}
+
 // ─── UIView / UILabel / controls ──────────────────────────────────────────────────
 %hook UIView
 - (void)setBackgroundColor:(UIColor *)color {
-    if (!ADRecolorOn() || !color || ADIsWebKitOwned(self)) {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color) || ADIsWebKitOwned(self)) {
         %orig;
         return;
     }
@@ -883,7 +916,7 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
     // Template images (tab-bar glyphs, chevrons, the cart icon) are tinted, not
     // drawn. Treating tint as foreground is what keeps those icons visible once
     // the bar behind them goes dark — the failure mode that broke v3.2.1.
-    if (!ADRecolorOn() || !color || ADIsWebKitOwned(self)) {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color) || ADIsWebKitOwned(self)) {
         %orig;
         return;
     }
@@ -899,7 +932,7 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 
 %hook UILabel
 - (void)setTextColor:(UIColor *)color {
-    if (!ADRecolorOn() || !color) {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color)) {
         %orig;
         return;
     }
@@ -915,7 +948,7 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 
 %hook UITextView
 - (void)setTextColor:(UIColor *)color {
-    if (!ADRecolorOn() || !color) {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color)) {
         %orig;
         return;
     }
@@ -931,7 +964,7 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 
 %hook UITextField
 - (void)setTextColor:(UIColor *)color {
-    if (!ADRecolorOn() || !color) {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color)) {
         %orig;
         return;
     }
@@ -947,7 +980,7 @@ static inline BOOL ADRecolorOn(void){ return gP.enabled && gP.nativeRecolor; }
 
 %hook UIButton
 - (void)setTitleColor:(UIColor *)color forState:(UIControlState)state {
-    if (!ADRecolorOn() || !color) {
+    if (!ADRecolorOn() || !color || ADIsOwnColor(color)) {
         %orig;
         return;
     }
@@ -1674,7 +1707,7 @@ static UIImage *ADGlyphify(UIImage *img){
     @try {
         if (ADIsModifiedImage(img)) return nil;                        // already ours
         if (objc_getAssociatedObject(img, kADGlyphChecked)) return nil; // known non-glyph
-        if (img.renderingMode == UIImageRenderingModeAlwaysTemplate) return nil;
+        if (ADImageIsTemplateish(img)) return nil;   // already tinted, not repainted
         if (!ADIsDarkGlyph(img)){
             objc_setAssociatedObject(img, kADGlyphChecked, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             return nil;
@@ -1739,11 +1772,18 @@ static BOOL ADIsTabBarItemish(UIView *v){
 static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
 static int gSwLabelFixed = 0, gSwTemplateSeen = 0, gSwTintFixed = 0;
 static char gSwSample[96] = {0};
+static char gSwTintNow[64] = {0};
 static void ADSweepViewTree(UIView *v, int depth){
     if (!v || depth > 60) return;
     @try {
         if (ADIsWebKitOwned(v)) return;                 // Dark Reader's territory
-        if (ADIsTabBarItemish(v)) return;               // tab bar owns its own colour; icons must survive
+        // Was `return`, which skipped this view AND everything under it -- including
+        // the background fill. That is where the grey boxes behind the nav tabs came
+        // from: an unthemed light fill sitting exactly where we refused to look, and
+        // appearing or not depending on whether that view happened to be installed
+        // for the current tab state. Only the icon and label work needs holding back
+        // here; the fill still has to be darkened like everything else.
+        BOOL tabBarish = ADIsTabBarItemish(v);
         UIColor *bg = v.backgroundColor;
         if (bg && !ADIsModifiedUIColor(bg)) {
             // Assign the TRANSFORMED colour, never the same object back.
@@ -1769,11 +1809,11 @@ static void ADSweepViewTree(UIView *v, int depth){
         // v5.14.0, which means no setter path reached them. ADGlyphify caches both
         // outcomes, so a view swept repeatedly costs a dictionary lookup.
         gSwViews++;
-        if ([v isKindOfClass:[UIImageView class]]){
+        if (!tabBarish && [v isKindOfClass:[UIImageView class]]){
             @try {
                 UIImageView *iv = (UIImageView *)v;
                 if (iv.image) gSwImgSeen++;
-                if (iv.image && iv.image.renderingMode == UIImageRenderingModeAlwaysTemplate){
+                if (iv.image && ADImageIsTemplateish(iv.image)){
                     gSwTemplateSeen++;
                     UIColor *tint = iv.tintColor;
                     CGFloat tr,tg,tb,ta;
@@ -1781,6 +1821,16 @@ static void ADSweepViewTree(UIView *v, int depth){
                         (0.2126*tr + 0.7152*tg + 0.0722*tb) < 0.45){
                         ((UIView *)iv).tintColor = ADColorFromHex(gP.fgHex);
                         gSwTintFixed++;
+                    }
+                    // Read back what a real template icon's tint RESOLVES to, whether
+                    // or not we just changed it. Recording only on the fix path would
+                    // go silent in exactly the steady state we need to inspect.
+                    if (!gSwTintNow[0]){
+                        @try {
+                            CGFloat nr,ng,nb,na;
+                            if ([((UIView *)iv).tintColor getRed:&nr green:&ng blue:&nb alpha:&na])
+                                snprintf(gSwTintNow, sizeof(gSwTintNow), "%.2f,%.2f,%.2f", nr,ng,nb);
+                        } @catch(...) {}
                     }
                 }
                 UIImage *tpl = ADGlyphify(((UIImageView *)v).image);
@@ -1790,11 +1840,11 @@ static void ADSweepViewTree(UIView *v, int depth){
                     ((UIImageView *)v).image = tpl;
                 }
             } @catch(...) {}
-        } else if ([v isKindOfClass:[UIButton class]]){
+        } else if (!tabBarish && [v isKindOfClass:[UIButton class]]){
             @try {
                 UIButton *b = (UIButton *)v;
                 UIImage *cur = b.currentImage;
-                if (cur && cur.renderingMode == UIImageRenderingModeAlwaysTemplate){
+                if (cur && ADImageIsTemplateish(cur)){
                     gSwTemplateSeen++;
                     UIColor *tint = b.tintColor;
                     CGFloat tr,tg,tb,ta;
@@ -1812,7 +1862,7 @@ static void ADSweepViewTree(UIView *v, int depth){
             } @catch(...) {}
         }
 
-        if ([v isKindOfClass:[UILabel class]]){
+        if (!tabBarish && [v isKindOfClass:[UILabel class]]){
             UILabel *l = (UILabel *)v;
             UIColor *tc = l.textColor;
             @try {
@@ -1871,16 +1921,18 @@ static void ADSweepAllWindows(void){
         gSwViews = gSwImgSeen = gSwGlyphFixed = gSwDarkLabels = gSwLabelFixed = 0;
         gSwTemplateSeen = gSwTintFixed = 0;
         gSwSample[0] = 0;
+        gSwTintNow[0] = 0;
         for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
             if (![sc isKindOfClass:[UIWindowScene class]]) continue;
             for (UIWindow *w in ((UIWindowScene *)sc).windows){ nwin++; ADSweepViewTree(w, 0); }
         }
         static NSString *last = nil;
         NSString *now = [NSString stringWithFormat:
-                         @"win=%d views=%d img=%d tmpl=%d tintFixed=%d glyphFixed=%d darkLabels=%d labelFixed=%d%s%s",
+                         @"win=%d views=%d img=%d tmpl=%d tintFixed=%d glyphFixed=%d darkLabels=%d labelFixed=%d%s%s%s%s",
                          nwin, gSwViews, gSwImgSeen, gSwTemplateSeen, gSwTintFixed,
                          gSwGlyphFixed, gSwDarkLabels, gSwLabelFixed,
-                         gSwSample[0] ? " declined=" : "", gSwSample[0] ? gSwSample : ""];
+                         gSwSample[0]  ? " declined=" : "", gSwSample[0]  ? gSwSample  : "",
+                         gSwTintNow[0] ? " tintNow="  : "", gSwTintNow[0] ? gSwTintNow : ""];
         if (!last || ![last isEqualToString:now]){ last = now; ADLog(@"sweep %@", now); }
     } @catch(...) {}
 }
@@ -1892,7 +1944,10 @@ static void ADSweepAllWindows(void){
 static UIColor *ADColorFromHex(const char *hex){
     unsigned int r=24,g=26,b=27;
     if (hex && hex[0]=='#') sscanf(hex+1, "%02x%02x%02x", &r,&g,&b);
-    return [UIColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:1.0];
+    // Marked as ours: this is a finished theme colour, not an app colour awaiting
+    // transformation. Without the mark, handing it to tintColor ran it through the
+    // foreground curve and came back dark.
+    return ADMarkOwnColor([UIColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:1.0]);
 }
 static void ADDarkenSplash(UIViewController *vc){
     if (!gP.enabled) return;

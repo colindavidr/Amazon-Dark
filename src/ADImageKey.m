@@ -139,6 +139,16 @@ BOOL ADIsDarkGlyph(UIImage *img){
     // Glyphs are small. A large asset is a photo or banner; leave it alone.
     if (W > 256 || H > 256) return NO;
 
+    // A mask / alpha-only image carries no colour at all -- it is a stencil, which is
+    // the definition of a glyph. Decide it here rather than below: CGContextDrawImage
+    // will not composite a mask into an RGBA context, so these decoded to an entirely
+    // transparent buffer, fell through to `n < 8`, returned NO, and that NO was then
+    // cached on the image permanently.
+    {
+        CGImageAlphaInfo ai0 = CGImageGetAlphaInfo(src);
+        if (CGImageIsMask(src) || ai0 == kCGImageAlphaOnly) return YES;
+    }
+
     // NO alpha-info gate. The previous version required kCGImageAlphaFirst/Last/
     // Premultiplied*, which rejected everything else outright - and iOS decodes
     // asset-catalog icons as kCGImageAlphaOnly (template masks) or
@@ -178,7 +188,11 @@ BOOL ADIsDarkGlyph(UIImage *img){
     }
     CGContextRelease(ctx);
     free(buf);
-    if (n < 8 || total == 0) return NO;                // essentially empty
+    if (total == 0) return NO;
+    // Nothing opaque came back from a non-empty image: the decode produced no colour,
+    // which in practice means a stencil CoreGraphics declined to composite. At glyph
+    // dimensions that is an icon, not a photograph.
+    if (n < 8) return (W <= 64 && H <= 64 && transparent > 0);
 
     double meanL = sumL / n, meanC = sumChroma / n;
     double clearFrac = (double)transparent / (double)total;
