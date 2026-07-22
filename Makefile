@@ -30,15 +30,20 @@ before-all::
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
-# NO preference bundle (v5.61.0).
-# Five implementations were tried -- the stock Theos compile-time subclass, a
-# CBR-style runtime %subclass, a hand-built specifier list, an executable-free
-# bundle, and a dladdr-resolved bundle. Every one faulted SIGBUS inside
-# Settings at whatever call it reached first (loadSpecifiersFromPlistName,
-# groupSpecifierWithName, then pathForResource on a bundle that had already
-# resolved OK). Code that has nothing in common cannot be wrong the same way;
-# the bundle binary itself is what Settings will not run here. The toggle now
-# ships as layout/usr/bin/amazondark -- a shell script, nothing to validate.
+# Preference bundle with an INTENTIONALLY EMPTY executable (v5.63.0).
+# Settings will not load a bundle that has no executable, but every bundle
+# that contained our code faulted SIGBUS inside Settings. dlopen always
+# succeeded though -- the ctor logged every time -- so the executable exists
+# to satisfy the loader and contains nothing. NSPrincipalClass points at
+# Apple's PSListController, which renders Root.plist itself.
+BUNDLE_NAME = ADPrefs
+ADPrefs_FILES         = prefs/empty.m
+ADPrefs_INSTALL_PATH  = /Library/PreferenceBundles
+ADPrefs_FRAMEWORKS    = Foundation
+ADPrefs_CFLAGS        = -Wno-error
+ADPrefs_RESOURCE_DIRS = prefs/Resources
+
+include $(THEOS_MAKE_PATH)/bundle.mk
 
 after-package::
 	@ls -1t packages/*.deb 2>/dev/null | head -1 | xargs -I{} echo "package ready: {}"

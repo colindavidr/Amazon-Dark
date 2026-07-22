@@ -5,4 +5,7 @@
 # and relaunches Amazon from the app switcher to activate.
 echo "[AmazonDark] Installed. Force-quit and relaunch Amazon to activate."
 echo "[AmazonDark] Tune it in Settings > AmazonDark."
+# Remove stale PreferenceLoader entries from earlier layouts.
+rm -f /var/jb/Library/PreferenceLoader/Preferences/AmazonDarkPrefs.plist 2>/dev/null || true
+rm -f /Library/PreferenceLoader/Preferences/AmazonDarkPrefs.plist 2>/dev/null || true
 exit 0
