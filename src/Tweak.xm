@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.61.0"
+#define AD_VERSION "v5.62.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
