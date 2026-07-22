@@ -1,8 +1,0 @@
-{
-    items = (
-        { cell = PSGroupCell; label = "AmazonDark"; footerText = "True dark mode for the Amazon app. Toggle, then respring; the theme applies on the next Amazon launch."; },
-        { cell = PSSwitchCell; label = "Enabled"; key = "enabled"; default = 1; defaults = "com.colindavidr.amazondark"; PostNotification = "com.colindavidr.amazondark/prefs-changed"; },
-        { cell = PSButtonCell; label = "Respring"; action = "adRespring"; },
-    );
-    title = "AmazonDark";
-}

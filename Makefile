@@ -21,9 +21,13 @@ before-all::
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
-# Build the preference bundle too.
-SUBPROJECTS += prefs
-include $(THEOS_MAKE_PATH)/aggregate.mk
+# NO preference-bundle subproject any more (v5.56.0).
+# The pane is now a plist-only bundle staged straight from layout/ with NO
+# executable. Three separate crash-report-driven attempts at a compiled
+# PSListController subclass all took Settings down with them; a bundle that
+# contains no code of ours cannot. Settings loads its own PSListController and
+# reads our Root.plist -- the toggle writes to the same defaults domain the
+# tweak reads, so nothing else changes.
 
 after-package::
 	@ls -1t packages/*.deb 2>/dev/null | head -1 | xargs -I{} echo "package ready: {}"

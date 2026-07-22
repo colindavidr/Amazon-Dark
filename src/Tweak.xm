@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.55.0"
+#define AD_VERSION "v5.56.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -330,7 +330,16 @@ static NSString *ADFixesLiteral(void){
              // ISSUE 2: the read-more fade on long reviews is a white gradient
              // overlay; on the dark theme it reads as a white smear. Remove the
              // paint wholesale -- the expander still works, the text just ends.
-             "[class*=expander] [class*=fade],[class*=fade-out],[class*=gradient],"
+             // THE CONTENT REGRESSION, AND MY FAULT. v5.54 put display:none in a
+             // rule whose selector list included [class*=gradient] -- so every
+             // element with "gradient" anywhere in its class was HIDDEN, and on
+             // the home and cart pages that is real content, not scrim. Two
+             // separate rules now: real elements only ever lose their PAINT,
+             // and display:none is confined to pseudo-elements, which draw
+             // nothing but the fade itself.
+             "[class*=expander] [class*=fade],[class*=fade-out],"
+             "[data-hook*=review] [class*=fade],[class*=expander-fade]"
+             "{background:none !important;background-image:none !important;}"
              "[class*=a-expander-partial]::before,[class*=a-expander-partial]::after,"
              "[class*=expander-content]::before,[class*=expander-content]::after,"
              "[class*=a-expander-partial-collapse-container]::after,"

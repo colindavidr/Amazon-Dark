@@ -2,7 +2,7 @@
     entry = {
         bundle = ADPrefs;
         cell = PSLinkCell;
-        detail = ADRootListController;
+        detail = PSListController;
         icon = "icon.png";
         isController = 1;
         label = AmazonDark;
