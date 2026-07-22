@@ -70,7 +70,8 @@ static void ADWriteBoth(NSString *key, id value){
 
 - (NSBundle *)bundle {
     NSBundle *b = [NSBundle bundleWithPath:AD_BUNDLE];
-    return b ?: %orig;
+    if (b) return b;
+    return %orig;
 }
 
 - (id)readPreferenceValue:(PSSpecifier *)specifier {

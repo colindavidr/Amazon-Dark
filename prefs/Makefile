@@ -12,6 +12,10 @@ ADPrefs_FILES     = ADPrefsController.xm
 ADPrefs_INSTALL_PATH = /Library/PreferenceBundles
 ADPrefs_FRAMEWORKS   = UIKit Foundation CoreFoundation
 ADPrefs_CFLAGS       = -fobjc-arc -Wno-error -Wno-unused-variable -Wno-unused-function
+# Pure-runtime Logos codegen: %subclass/%c/%new with NO substrate linkage.
+# The default MobileSubstrate generator can emit substrate references that a
+# standalone preference bundle does not link, which fails the build.
+ADPrefs_LOGOS_DEFAULT_GENERATOR = internal
 
 include $(THEOS_MAKE_PATH)/bundle.mk
 
