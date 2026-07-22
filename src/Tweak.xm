@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.43.0"
+#define AD_VERSION "v5.44.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -292,11 +292,24 @@ static NSString *ADFixesLiteral(void){
              // polarity-proof -- dark or light artwork both end up a white silhouette.
              // Scoped to glyph nodes only; the -position container stays out, so the
              // disc keeps the dark background the rule below gives it.
-             "[class*=heart-placeholder],[class*=lists-framework-unfill],"
-             "[class*=heart] img,[class*=wish] img,[class*=lists-framework] img,"
+             "[class*=lists-framework-unfill],"
+             "[class*=heart] img:not([class*=placehold]),[class*=wish] img:not([class*=placehold]),"
+             "[class*=lists-framework] img:not([class*=placehold]),"
              "[class*=heart] svg,[class*=wish] svg,[class*=lists-framework] svg,"
              "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon]"
              "{filter:brightness(0) invert(1) !important;}"
+             // The white flash was OURS. puis-heart-placeholder is Amazon's
+             // LIGHT-MODE loading artwork -- shown while the real sprite loads --
+             // and brightness(0) invert(1) turns every opaque pixel of a light
+             // image SOLID WHITE. So the loading frames showed a white box we
+             // painted ourselves, until the changeover swapped in the sprite. A
+             // plain invert+hue-rotate instead renders the placeholder as a
+             // correct dark-mode heart (light disc -> dark, dark glyph -> light)
+             // for those frames; if the asset is a transparent spacer the filter
+             // changes nothing visible. documentStart, so there is no frame
+             // before it applies.
+             "[class*=heart-placeholder]"
+             "{filter:invert(1) hue-rotate(180deg) !important;}"
 
              // Heart circle. The button behind the heart is a light/white disc; on a
              // dark theme it reads as a bright blob that hides the glyph. Darken it at
