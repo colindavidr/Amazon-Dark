@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.67.0"
+#define AD_VERSION "v5.68.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -3206,6 +3206,7 @@ static void ADReapplyBurst(void){
                 ADLog(@"screen: %@", vcKey);
             }
             gProbeArmed = YES;
+            @try { if (gP.enabled) [self setNeedsStatusBarAppearanceUpdate]; } @catch(...) {}
             ADReapplyBurst();
             // Probe after the burst has settled, so we only report genuine hold-outs.
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 900*1000000LL),
@@ -3216,6 +3217,32 @@ static void ADReapplyBurst(void){
 - (UIStatusBarStyle)preferredStatusBarStyle {
     if (gP.enabled) return UIStatusBarStyleLightContent;
     return %orig;
+}
+// Containers hand the decision to a child (nav stacks, tab bars, RN hosts).
+// Returning nil keeps the decision on the container itself, where the override
+// above applies -- so a child that wants dark content cannot win.
+- (UIViewController *)childViewControllerForStatusBarStyle {
+    if (gP.enabled) return nil;
+    return %orig;
+}
+%end
+
+// React Native's StatusBar module sets the style through the legacy
+// UIApplication API, which never consults any view controller. Force it light.
+%hook UIApplication
+- (void)setStatusBarStyle:(UIStatusBarStyle)style {
+    if (gP.enabled){
+        %orig(UIStatusBarStyleLightContent);
+        return;
+    }
+    %orig;
+}
+- (void)setStatusBarStyle:(UIStatusBarStyle)style animated:(BOOL)animated {
+    if (gP.enabled){
+        %orig(UIStatusBarStyleLightContent, animated);
+        return;
+    }
+    %orig;
 }
 %end
 
