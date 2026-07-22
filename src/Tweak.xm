@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.45.0"
+#define AD_VERSION "v5.46.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -330,6 +330,13 @@ static NSString *ADFixesLiteral(void){
              "[class*=heart] [class*=changeover],[class*=lists-framework] [class*=changeover],"
              "[class*=heart-position] div:not([class]),"
              "[class*=heart] [class*=a-section],[class*=lists-framework] [class*=a-section]"
+             "{background-color:#181a1b !important;}"
+             // Card skeletons. The light= probe names div.a-section@76x64 shells
+             // that stay light through every pass -- they flash white where the
+             // heart will be while the card hydrates. Empty shells carry no
+             // content, so darkening them at documentStart cannot cover anything.
+             "[class*=puis] [class*=a-section]:empty,[class*=s-result] [class*=a-section]:empty,"
+             "[class*=s-card] [class*=a-section]:empty"
              "{background-color:#181a1b !important;}"
              // Glyph carriers must stay transparent or the silhouette filter
              // inverts their fill into a light box. Placed AFTER the disc rule so
@@ -1245,6 +1252,7 @@ static const void *kADRNInvertKey  = &kADRNInvertKey;
 static const void *kADRNFiltersKey = &kADRNFiltersKey;
 static const void *kADRNCheckKey   = &kADRNCheckKey;
 static BOOL ADBackdropIsDark(UIView *v);
+static void ADLaunchWhiteGuard(UIView *v);
 static inline BOOL ADIsTaggedIndicator(UIView *v){
     return v && objc_getAssociatedObject(v, kADIndicatorKey) != nil;
 }
@@ -2431,6 +2439,35 @@ static UIImage *ADGlyphify(UIImage *img){
 }
 %end
 
+// The residual seconds-long delay: the bottom bar is Packard/React-Native, so a
+// tap can be consumed by an RN pressable -- no UIControl ever tracks or flips
+// `selected`, and neither of the immediate paths above fires. The white then
+// arrives only with the next incidental sweep. UIWindow sendEvent: sees every
+// touch no matter who handles it; a touch in the bar region fires a short
+// correction burst, and whichever pass first observes the settled selection
+// paints it. Writes are idempotent, so the burst cannot ring.
+%hook UIWindow
+- (void)sendEvent:(UIEvent *)event {
+    %orig;
+    @try {
+        if (!ADRecolorOn()) return;
+        for (UITouch *t in event.allTouches){
+            if (t.phase != UITouchPhaseBegan && t.phase != UITouchPhaseEnded) continue;
+            CGPoint pt = [t locationInView:nil];
+            CGFloat H = self.bounds.size.height;
+            if (H > 0 && pt.y > H - 130.0){
+                static const int64_t d_ms[] = {0, 120, 300, 600, 1000};
+                for (int i = 0; i < 5; i++){
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, d_ms[i]*1000000LL),
+                        dispatch_get_main_queue(), ^{ @try { ADScheduleBarCorrection(); } @catch(...) {} });
+                }
+                break;
+            }
+        }
+    } @catch(...) {}
+}
+%end
+
 // ─── catch-up sweep ───────────────────────────────────────────────────────────────
 // Views built before our hooks installed (the pre-warmed gateway, the splash stack)
 // already hold light colours. Re-assigning a view's own colour runs it through the
@@ -2527,6 +2564,7 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
     @try {
         if (ADIsWebKitOwned(v)) return;                 // Dark Reader's territory
         ADInvertRNSVG(v);                               // Alexa panel vector icons
+        ADLaunchWhiteGuard(v);                          // launch-window white killer
         // Was `return`, which skipped this view AND everything under it -- including
         // the background fill. That is where the grey boxes behind the nav tabs came
         // from: an unthemed light fill sitting exactly where we refused to look, and
@@ -2817,9 +2855,96 @@ static UIColor *ADColorFromHex(const char *hex){
     // foreground curve and came back dark.
     return ADMarkOwnColor([UIColor colorWithRed:r/255.0 green:g/255.0 blue:b/255.0 alpha:1.0]);
 }
+// ─── launch-window white killer ─────────────────────────────────────────────────
+// Setting the splash VC's backgroundColor was correct but insufficient: the 4+
+// second white screen is an OPAQUE surface drawn over it -- most likely a
+// fullscreen UIImageView whose bitmap bakes the logo into a white field, which
+// no backgroundColor can darken. For the first 12 seconds of the process, any
+// screen-covering view is inspected: a light background is repainted, and a
+// mostly-light IMAGE gets the same colorInvert+hueRotate the RNSVG icons use --
+// white field goes dark, dark logo goes light, coloured artwork keeps its hue.
+// splashdump lines name every large surface seen, so if the white lives in a
+// class this net misses, the next log says exactly which.
+static double gADT0 = 0;
+static inline double ADUptime(void){
+    double now = CFAbsoluteTimeGetCurrent();
+    if (gADT0 == 0) gADT0 = now;
+    return now - gADT0;
+}
+static BOOL ADImageMostlyLight(UIImage *img){
+    @try {
+        CGImageRef src = img.CGImage;
+        if (!src) return NO;
+        enum { W = 12, H = 12 };
+        uint8_t buf[W*H*4];
+        memset(buf, 0, sizeof(buf));
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGContextRef ctx = CGBitmapContextCreate(buf, W, H, 8, W*4, cs,
+                            kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+        CGColorSpaceRelease(cs);
+        if (!ctx) return NO;
+        CGContextDrawImage(ctx, CGRectMake(0,0,W,H), src);
+        CGContextRelease(ctx);
+        long n = 0; double sum = 0;
+        for (int i = 0; i < W*H; i++){
+            uint8_t *px = buf + i*4;
+            if (px[3] < 100) continue;
+            n++; sum += (0.2126*px[0] + 0.7152*px[1] + 0.0722*px[2]) / 255.0;
+        }
+        if (n < (long)(W*H*0.4)) return NO;   // mostly transparent: not a white field
+        return (sum / n) > 0.60;
+    } @catch(...) {}
+    return NO;
+}
+static int gSplashDumpLeft = 10;
+static int gSplashFixLeft  = 6;
+static void ADLaunchWhiteGuard(UIView *v){
+    @try {
+        if (!gP.enabled || ADUptime() > 12.0) return;
+        CGRect sb = [UIScreen mainScreen].bounds;
+        CGFloat w = v.bounds.size.width, h = v.bounds.size.height;
+        if (w < sb.size.width*0.6 || h < sb.size.height*0.5) return;
+        BOOL isIv = [v isKindOfClass:[UIImageView class]];
+        UIImage *im = isIv ? ((UIImageView *)v).image : nil;
+        UIColor *bg = v.backgroundColor; double bl = -1; CGFloat r,g,b,a;
+        if (bg && [bg getRed:&r green:&g blue:&b alpha:&a] && a > 0.5)
+            bl = 0.2126*r + 0.7152*g + 0.0722*b;
+        if (gSplashDumpLeft > 0 && (im || bl >= 0)){
+            gSplashDumpLeft--;
+            ADLog(@"splashdump cls=%s %.0fx%.0f bg=%.2f img=%d light=%d t=%.1f",
+                  object_getClassName(v), w, h, bl, im?1:0,
+                  im?ADImageMostlyLight(im):0, ADUptime());
+        }
+        if (bl > 0.55 && !ADIsOwnColor(bg)) v.backgroundColor = ADColorFromHex(gP.bgHex);
+        if (im && gSplashFixLeft > 0 && !objc_getAssociatedObject(v, kADRNInvertKey) &&
+            ADImageMostlyLight(im)){
+            Class F = NSClassFromString(@"CAFilter");
+            if (F){
+                id inv = [F filterWithType:@"colorInvert"];
+                id hue = [F filterWithType:@"hueRotate"];
+                @try { [hue setValue:@(M_PI) forKey:@"inputAngle"]; } @catch(...) { hue = nil; }
+                if (inv){
+                    NSArray *ours = hue ? @[inv, hue] : @[inv];
+                    v.layer.filters = ours;
+                    objc_setAssociatedObject(v, kADRNFiltersKey, ours, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    objc_setAssociatedObject(v, kADRNInvertKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    gSplashFixLeft--;
+                    ADLog(@"splash inverted cls=%s %.0fx%.0f", object_getClassName(v), w, h);
+                }
+            }
+        }
+    } @catch(...) {}
+}
+static void ADDarkenSplashTree(UIView *v, int d){
+    if (!v || d > 8) return;
+    @try { ADLaunchWhiteGuard(v); for (UIView *sv in v.subviews) ADDarkenSplashTree(sv, d+1); } @catch(...) {}
+}
 static void ADDarkenSplash(UIViewController *vc){
     if (!gP.enabled) return;
-    @try { UIView *v = vc.view; if (v) v.backgroundColor = ADColorFromHex(gP.bgHex); } @catch(...) {}
+    @try {
+        UIView *v = vc.view;
+        if (v){ v.backgroundColor = ADColorFromHex(gP.bgHex); ADDarkenSplashTree(v, 0); }
+    } @catch(...) {}
 }
 %hook AXUSplashScreenViewController
 - (void)viewDidLayoutSubviews {
