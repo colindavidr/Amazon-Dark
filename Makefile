@@ -1,4 +1,13 @@
-export TARGET = iphone:clang:latest:15.0
+# SDK PINNED TO 16.5 -- this is the prefs crash, not a logic bug.
+# CI warns "object file was built with an incompatible arm64e ABI compiler" on
+# every build. Amazon is an arm64 process, so it loads the good slice and works
+# fine; Settings is arm64e and loads the broken one, which is why the pane
+# faults SIGBUS at a garbage address on its FIRST call into
+# Preferences.framework -- loadSpecifiersFromPlistName in v5.58, PSSpecifier
+# creation in v5.55. Same symptom, same cause. CarBridgeReborn's prefs bundle
+# runs on this device and pins iphone:clang:16.5:17.0; matching it produces a
+# correct arm64e slice.
+export TARGET = iphone:clang:16.5:17.0
 export ARCHS  = arm64 arm64e
 
 include $(THEOS)/makefiles/common.mk
