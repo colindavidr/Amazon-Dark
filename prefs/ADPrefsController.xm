@@ -98,7 +98,7 @@ static void ADWriteBoth(NSString *key, id value){
 
 - (id)specifiers {
     @try {
-        NSArray *specs = [self loadSpecifiersFromPlistName:@"Root" target:self];
+        NSArray *specs = [(PSListController *)self loadSpecifiersFromPlistName:@"Root" target:self];
         if (specs.count){
             Ivar iv = class_getInstanceVariable(%c(PSListController), "_specifiers");
             if (iv) object_setIvar(self, iv, specs);
