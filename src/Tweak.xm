@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.46.0"
+#define AD_VERSION "v5.47.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -169,7 +169,11 @@ static void ADPrefHex(NSDictionary *d, NSString *k, const char *def, char *out){
     strncpy(out, s.UTF8String, 7); out[7] = 0;
 }
 
+static void ADLoadPrefs(void);
+static BOOL gPrefsLoadedOnce = NO;
+static inline void ADEnsurePrefs(void){ if (!gPrefsLoadedOnce) ADLoadPrefs(); }
 static void ADLoadPrefs(void){
+    gPrefsLoadedOnce = YES;
     // Defaults: everything a "true dark mode" wants, image inversion OFF.
     gP.enabled = YES; gP.webDarkReader = YES; gP.nativeTheme = YES;
     gP.imageBackdrop = YES;
@@ -382,8 +386,15 @@ static NSString *ADDarkReaderBootstrap(void){
              "if(!n||n.nodeType!==1)return;"
              "var c=n.className;if(c&&c.baseVal!==undefined)c=c.baseVal;c=String(c||'');"
              "if(__adPinRe.test(c)){n.style.setProperty('background-color','transparent','important');}"
+             "if(String(c).indexOf('a-section')>=0&&n.closest&&"
+               "n.closest('[class*=puis],[class*=s-result],[class*=s-card]')){"
+               "n.style.setProperty('background-color','#181a1b','important');}"
              "if(n.querySelectorAll){var q=n.querySelectorAll('[class*=unfill],[class*=placehold]');"
-               "for(var i=0;i<q.length;i++)q[i].style.setProperty('background-color','transparent','important');}"
+               "for(var i=0;i<q.length;i++)q[i].style.setProperty('background-color','transparent','important');"
+               "var q2=n.querySelectorAll('[class*=a-section]');"
+               "for(var k2=0;k2<q2.length&&k2<200;k2++){var e2=q2[k2];"
+                 "if(e2.closest&&e2.closest('[class*=puis],[class*=s-result],[class*=s-card]')){"
+                   "e2.style.setProperty('background-color','#181a1b','important');}}}"
            "}catch(e){}};"
            "new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var m=ms[i];"
              "if(m.type==='attributes'){__adPin(m.target);continue;}"
@@ -998,6 +1009,7 @@ static void ADInjectAllWebViews(void){
 - (void)removeAllUserScripts {
     %orig;
     @try {
+        ADEnsurePrefs();
         if (!gP.enabled || !gP.webDarkReader) return;
         NSString *boot = ADDarkReaderBootstrap();
         Class WKUS = NSClassFromString(@"WKUserScript");
@@ -1011,9 +1023,27 @@ static void ADInjectAllWebViews(void){
 }
 %end
 
+static inline double ADUptime(void);
+static int gWkLogLeft = 6;
+// A one-line dark floor evaluated into whatever document currently exists --
+// no Dark Reader needed. If the engine is already there this is a no-op; if
+// the page is mid-load and unthemed, the background stops being white NOW.
+static void ADPreDarken(WKWebView *wv){
+    @try {
+        [wv evaluateJavaScript:
+            @"try{if(!document.getElementById('adpre')){var s=document.createElement('style');"
+             "s.id='adpre';s.textContent='html,body{background:#181a1b !important}';"
+             "(document.documentElement||document).appendChild(s);}}catch(e){}"
+             completionHandler:nil];
+    } @catch(...) {}
+}
+
 %hook WKWebView
 - (id)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)cfg {
     @try {
+        ADEnsurePrefs();
+        if (gWkLogLeft > 0){ gWkLogLeft--;
+            ADLog(@"wkhook init en=%d dr=%d t=%.1f", gP.enabled?1:0, gP.webDarkReader?1:0, ADUptime()); }
         if (gP.enabled && gP.webDarkReader && cfg && cfg.userContentController){
             NSString *js = ADDarkReaderBootstrap();
             Class WKUS = NSClassFromString(@"WKUserScript");
@@ -1030,7 +1060,9 @@ static void ADInjectAllWebViews(void){
 - (void)didMoveToWindow {
     %orig;
     @try {
+        ADEnsurePrefs();
         if (!self.window || !gP.enabled || !gP.webDarkReader) return;
+        ADPreDarken(self);   // instant dark floor for a page that is mid-load
         // Paint the web view's own backdrop dark up front so the white page has
         // nothing to flash before Dark Reader paints the DOM. Cheap and idempotent.
         self.opaque = NO;
@@ -2344,6 +2376,7 @@ static UIImage *ADGlyphify(UIImage *img){
 
 %hook UIImageView
 - (void)setImage:(UIImage *)image {
+    @try { if (ADRecolorOn() && image) dispatch_async(dispatch_get_main_queue(), ^{ @try { ADLaunchWhiteGuard(self); } @catch(...) {} }); } @catch(...) {}
     if (!image || ADIsWebKitOwned(self)) {
         %orig;
         return;
@@ -2446,6 +2479,8 @@ static UIImage *ADGlyphify(UIImage *img){
 // touch no matter who handles it; a touch in the bar region fires a short
 // correction burst, and whichever pass first observes the settled selection
 // paints it. Writes are idempotent, so the burst cannot ring.
+static void ADSweep(void);
+static int gBarTapLog = 4;
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
     %orig;
@@ -2456,10 +2491,11 @@ static UIImage *ADGlyphify(UIImage *img){
             CGPoint pt = [t locationInView:nil];
             CGFloat H = self.bounds.size.height;
             if (H > 0 && pt.y > H - 130.0){
-                static const int64_t d_ms[] = {0, 120, 300, 600, 1000};
-                for (int i = 0; i < 5; i++){
+                if (gBarTapLog > 0){ gBarTapLog--; ADLog(@"bartap y=%.0f t=%.1f", pt.y, ADUptime()); }
+                static const int64_t d_ms[] = {0, 250, 700};
+                for (int i = 0; i < 3; i++){
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, d_ms[i]*1000000LL),
-                        dispatch_get_main_queue(), ^{ @try { ADScheduleBarCorrection(); } @catch(...) {} });
+                        dispatch_get_main_queue(), ^{ @try { ADScheduleBarCorrection(); ADSweep(); } @catch(...) {} });
                 }
                 break;
             }
