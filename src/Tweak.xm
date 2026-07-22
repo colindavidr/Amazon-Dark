@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.66.0"
+#define AD_VERSION "v5.66.1"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -188,6 +188,10 @@ static void ADLoadPrefs(void){
     gP.nativeRecolor = YES;
     gP.brightness = 100; gP.contrast = 100; gP.sepia = 0; gP.grayscale = 0;
     strcpy(gP.bgHex, "#181a1b"); strcpy(gP.fgHex, "#e8e6e3");
+    // Declared at function scope: the log below sits outside the @try, and in
+    // v5.65.0 these lived inside it, which would not compile.
+    const char *srcPath = "(defaults only)";
+    unsigned long nKeys = 0;
     @try {
         NSUserDefaults *u = [[NSUserDefaults alloc] initWithSuiteName:@(AD_PREF_DOMAIN)];
         NSDictionary *d = [u dictionaryRepresentation] ?: @{};
@@ -212,7 +216,6 @@ static void ADLoadPrefs(void){
             }
         } @catch(...) {}
         [paths addObject:[NSString stringWithFormat:@"/var/mobile/Library/Preferences/%s.plist", AD_PREF_DOMAIN]];
-        const char *srcPath = "(defaults only)";
         for (NSString *pp in paths){
             NSDictionary *fromFile = [NSDictionary dictionaryWithContentsOfFile:pp];
             if (fromFile.count){
@@ -235,9 +238,10 @@ static void ADLoadPrefs(void){
         gP.grayscale          = ADPrefLong(d, @"grayscale",          gP.grayscale);
         ADPrefHex(d, @"bgHex", "#181a1b", gP.bgHex);
         ADPrefHex(d, @"fgHex", "#e8e6e3", gP.fgHex);
+        nKeys = (unsigned long)d.count;
     } @catch(...) {}
     ADSyncColorEngine();
-    ADLog(@"prefs: src=%s suiteKeys=%lu", srcPath, (unsigned long)d.count);
+    ADLog(@"prefs: src=%s keys=%lu", srcPath, nKeys);
     ADLog(@"prefs: enabled=%d web=%d nativeTheme=%d nativeRecolor=%d bright=%ld contrast=%ld gray=%ld sepia=%ld bg=%s fg=%s",
           gP.enabled, gP.webDarkReader, gP.nativeTheme, gP.nativeRecolor,
           gP.brightness, gP.contrast, gP.grayscale, gP.sepia, gP.bgHex, gP.fgHex);
