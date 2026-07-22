@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.44.0"
+#define AD_VERSION "v5.45.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -368,7 +368,32 @@ static NSString *ADDarkReaderBootstrap(void){
     if (!dr.length) return nil;
     return [NSString stringWithFormat:
         @"(function(){try{"
-         "if(window.__AMZDARK_LOADED__)return;window.__AMZDARK_LOADED__=1;%@\n" // DarkReader UMD
+         "if(window.__AMZDARK_LOADED__)return;window.__AMZDARK_LOADED__=1;"
+         "try{window.__AD_EARLY__='';"
+           "var __adPinRe=/unfill|placehold/i;"
+           "var __adPin=function(n){try{"
+             "if(!n||n.nodeType!==1)return;"
+             "var c=n.className;if(c&&c.baseVal!==undefined)c=c.baseVal;c=String(c||'');"
+             "if(__adPinRe.test(c)){n.style.setProperty('background-color','transparent','important');}"
+             "if(n.querySelectorAll){var q=n.querySelectorAll('[class*=unfill],[class*=placehold]');"
+               "for(var i=0;i<q.length;i++)q[i].style.setProperty('background-color','transparent','important');}"
+           "}catch(e){}};"
+           "new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var m=ms[i];"
+             "if(m.type==='attributes'){__adPin(m.target);continue;}"
+             "for(var j=0;j<m.addedNodes.length;j++)__adPin(m.addedNodes[j]);}})"
+             ".observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['class']});"
+           "var __adSnap=function(t){try{"
+             "var u=document.querySelector('[class*=lists-framework-unfill]');"
+             "var pp=document.querySelector('[class*=heart-placeholder]');"
+             "var d=function(x){if(!x)return '-';var cs=getComputedStyle(x);"
+               "return (cs.backgroundColor||'').replace(/ /g,'')+'/'+(cs.backgroundImage==='none'?'-':'Y')+'/'+String(cs.filter).slice(0,24);};"
+             "window.__AD_EARLY__+=' t'+t+'[u:'+d(u)+'|p:'+d(pp)+']';"
+           "}catch(e){}};"
+           "setTimeout(function(){__adSnap(120);},120);"
+           "setTimeout(function(){__adSnap(400);},400);"
+           "setTimeout(function(){__adSnap(900);},900);"
+         "}catch(e){}"
+         "%@\n" // DarkReader UMD
          "if(window.DarkReader&&DarkReader.enable){"
          "try{DarkReader.setFetchMethod(window.fetch);}catch(e){}"
          // WCAG contrast repair. Dark Reader recolours from the page's own palette,
@@ -659,6 +684,7 @@ static NSString *ADDarkReaderBootstrap(void){
                  "htree=' HEARTTREE='+hd.join(' ~ ');}"
              "}catch(e){}"
              "pr=' url='+String(location.pathname||'').slice(0,28)"
+               "+(window.__AD_EARLY__?(' EARLY='+window.__AD_EARLY__):'')"
                "+(acc.length?(' probe='+acc.join(' ')):' probe=none')"
                "+(lt.length?(' light='+lt.join(' ')):'')"
                "+(ht.length?(' HEART='+ht.join(' ')):'')+htree;}"
