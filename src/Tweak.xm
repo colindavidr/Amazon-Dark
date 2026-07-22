@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.38.0"
+#define AD_VERSION "v5.39.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -297,9 +297,7 @@ static NSString *ADFixesLiteral(void){
              "[class*=heart] svg,[class*=wish] svg,[class*=lists-framework] svg,"
              "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon]"
              "{filter:brightness(0) invert(1) !important;}"
-             "[class*=lists-framework-unfill][class*=lists-framework-unfill][class*=lists-framework-unfill],"
-             "[class*=heart-placeholder][class*=heart-placeholder][class*=heart-placeholder]"
-             "{background-color:transparent !important;background-image:inherit;}"
+
              // Heart circle. The button behind the heart is a light/white disc; on a
              // dark theme it reads as a bright blob that hides the glyph. Darken it at
              // documentStart so there is never a white flash. (The earlier
@@ -312,6 +310,16 @@ static NSString *ADFixesLiteral(void){
              "[class*=lists-framework]:not(img):not([class*=unfill]),"
              "[class*=wish]:not(img)"
              "{background-color:#181a1b !important;}"
+             // Glyph carriers must stay transparent or the silhouette filter
+             // inverts their fill into a light box. Placed AFTER the disc rule so
+             // ties resolve here; tripled selectors outrank Dark Reader's
+             // mirrored overrides. No background-image declaration -- v5.38.0's
+             // background-image:inherit deleted the sprite itself.
+             "[class*=lists-framework-unfill][class*=lists-framework-unfill][class*=lists-framework-unfill],"
+             "[class*=heart-placeholder][class*=heart-placeholder][class*=heart-placeholder],"
+             "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon],"
+             "[class*=wish] i[class*=a-icon]"
+             "{background-color:transparent !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
              // legible on first paint instead of after the repair catches up.
@@ -514,7 +522,7 @@ static NSString *ADDarkReaderBootstrap(void){
              "for(var hz=0;hz<HRT.length;hz++){var he=HRT[hz];var hcs=getComputedStyle(he);"
                // circle: darken this element's light bg, and the first light ancestor bg
                "var hcl2=he.className;if(hcl2&&hcl2.baseVal!==undefined)hcl2=hcl2.baseVal;hcl2=String(hcl2||'');"
-               "if(/unfill|placehold/i.test(hcl2)){he.style.setProperty('background-color','transparent','important');}"
+               "if(/unfill|placehold|a-icon/i.test(hcl2)){he.style.setProperty('background-color','transparent','important');}"
                "else if(lum(hcs.backgroundColor)>0.5){he.style.setProperty('background-color',BG,'important');}"
                "var pe=he.parentElement,pd=0;"
                "while(pe&&pd++<3){var pl=lum(getComputedStyle(pe).backgroundColor);"
@@ -1828,12 +1836,37 @@ static BOOL ADProbeFirstTime(NSString *key){
 }
 
 static void ADProbeTree(UIView *v, int depth, int *found){
-    if (!v || depth > 40 || *found >= 25) return;
+    if (!v || depth > 40 || *found >= 40) return;
     @try {
         if (ADIsWebKitOwned(v)) {
             ADLog(@"  probe: WEBVIEW %s (Dark Reader territory)", object_getClassName(v));
             return;
         }
+        // Small image-bearing views: the Alexa panel's native icons. Either
+        // UIImageView artwork, or raw layer.contents -- React Native Fabric
+        // paints images that way and bypasses every UIImageView hook, which
+        // would explain glyphs no pass has ever touched.
+        @try {
+            CGFloat gw = v.bounds.size.width, gh = v.bounds.size.height;
+            if (gw >= 8 && gw <= 48 && gh >= 8 && gh <= 48 && !v.hidden){
+                BOOL isIv = [v isKindOfClass:[UIImageView class]];
+                UIImage *gi = isIv ? ((UIImageView *)v).image : nil;
+                BOOL layerImg = !isIv && v.layer.contents != nil;
+                if (gi || layerImg){
+                    NSString *gk = [NSString stringWithFormat:@"G%s%.0fx%.0f",
+                                    object_getClassName(v), gw, gh];
+                    if (ADProbeFirstTime(gk)){
+                        UIColor *tc = v.tintColor; CGFloat tr,tg,tb,ta; double tl = -1;
+                        if (tc && [tc getRed:&tr green:&tg blue:&tb alpha:&ta]) tl = 0.2126*tr+0.7152*tg+0.0722*tb;
+                        ADLog(@"  probe: GLYPH %s %.0fx%.0f img=%d dark=%d tmpl=%d layer=%d tint=%.2f",
+                              object_getClassName(v), gw, gh, gi?1:0,
+                              gi?ADIsDarkGlyph(gi):0, (gi && ADImageIsTemplateish(gi))?1:0,
+                              layerImg?1:0, tl);
+                        (*found)++;
+                    }
+                }
+            }
+        } @catch(...) {}
         UIColor *bg = v.backgroundColor;
         if (bg){
             CGFloat r,g,b,a;
