@@ -9,11 +9,7 @@
     };
     title = "AmazonDark";
     items = (
-        {
-            cell = PSGroupCell;
-            label = "AmazonDark";
-            footerText = "True dark mode for the Amazon app. Turn this off and force-quit Amazon to restore the stock look; turn it back on and relaunch to re-apply.";
-        },
+        { cell = PSGroupCell; },
         {
             cell = PSSwitchCell;
             label = "Enabled";
@@ -22,9 +18,6 @@
             defaults = "com.colindavidr.amazondark";
             PostNotification = "com.colindavidr.amazondark/prefs-changed";
         },
-        {
-            cell = PSGroupCell;
-            footerText = "Respring from a terminal with:  amazondark respring";
-        },
+        { cell = PSGroupCell; footerText = "Respring to take effect."; },
     );
 }

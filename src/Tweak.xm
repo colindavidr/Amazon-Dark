@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.64.0"
+#define AD_VERSION "v5.65.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -191,10 +191,37 @@ static void ADLoadPrefs(void){
     @try {
         NSUserDefaults *u = [[NSUserDefaults alloc] initWithSuiteName:@(AD_PREF_DOMAIN)];
         NSDictionary *d = [u dictionaryRepresentation] ?: @{};
-        // also merge the on-disk plist if present (rootless prefs path)
-        NSString *pp = [NSString stringWithFormat:@"/var/jb/var/mobile/Library/Preferences/%s.plist", AD_PREF_DOMAIN];
-        NSDictionary *fromFile = [NSDictionary dictionaryWithContentsOfFile:pp];
-        if (fromFile.count){ NSMutableDictionary *m = [d mutableCopy]; [m addEntriesFromDictionary:fromFile]; d = m; }
+        // WHY THE SETTINGS TOGGLE DID NOTHING. Settings writes this domain
+        // through cfprefsd, which lands in the REAL /var/mobile/Library/
+        // Preferences -- not the /var/jb mirror this used to read, and the
+        // NSUserDefaults suite above can come back empty inside Amazon's
+        // sandbox. So the switch was writing somewhere the tweak never looked.
+        // Read every plausible location, last one found wins, and derive the
+        // jailbreak root from our own loaded image so no path is hardcoded.
+        NSMutableArray *paths = [NSMutableArray array];
+        [paths addObject:[NSString stringWithFormat:@"/var/jb/var/mobile/Library/Preferences/%s.plist", AD_PREF_DOMAIN]];
+        @try {
+            Dl_info info;
+            if (dladdr((const void *)&ADLoadPrefs, &info) && info.dli_fname){
+                NSString *img = [NSString stringWithUTF8String:info.dli_fname];
+                NSRange jb = [img rangeOfString:@"/jb/"];
+                if (jb.location != NSNotFound){
+                    NSString *root = [img substringToIndex:jb.location + jb.length - 1];
+                    [paths addObject:[NSString stringWithFormat:@"%@/var/mobile/Library/Preferences/%s.plist", root, AD_PREF_DOMAIN]];
+                }
+            }
+        } @catch(...) {}
+        [paths addObject:[NSString stringWithFormat:@"/var/mobile/Library/Preferences/%s.plist", AD_PREF_DOMAIN]];
+        const char *srcPath = "(defaults only)";
+        for (NSString *pp in paths){
+            NSDictionary *fromFile = [NSDictionary dictionaryWithContentsOfFile:pp];
+            if (fromFile.count){
+                NSMutableDictionary *m = [d mutableCopy];
+                [m addEntriesFromDictionary:fromFile];
+                d = m;
+                srcPath = pp.UTF8String;
+            }
+        }
 
         gP.enabled            = ADPrefBool(d, @"enabled",            gP.enabled);
         gP.webDarkReader      = ADPrefBool(d, @"webDarkReader",      gP.webDarkReader);
@@ -210,6 +237,7 @@ static void ADLoadPrefs(void){
         ADPrefHex(d, @"fgHex", "#e8e6e3", gP.fgHex);
     } @catch(...) {}
     ADSyncColorEngine();
+    ADLog(@"prefs: src=%s suiteKeys=%lu", srcPath, (unsigned long)d.count);
     ADLog(@"prefs: enabled=%d web=%d nativeTheme=%d nativeRecolor=%d bright=%ld contrast=%ld gray=%ld sepia=%ld bg=%s fg=%s",
           gP.enabled, gP.webDarkReader, gP.nativeTheme, gP.nativeRecolor,
           gP.brightness, gP.contrast, gP.grayscale, gP.sepia, gP.bgHex, gP.fgHex);
