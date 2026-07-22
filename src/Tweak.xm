@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.66.1"
+#define AD_VERSION "v5.67.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -356,6 +356,12 @@ static NSString *ADFixesLiteral(void){
              // Home shortcut strips (Haul / Prime Video / Grocery...): brand
              // artwork sits on LIGHT pills, where the dark image backdrop reads
              // as a black box. Brand imgs keep a clean slate.
+             // Chrome glyphs: no backdrop, ever. Sized rules cannot be expressed
+             // in CSS, so cover the search/nav containers by name here and let the
+             // JS pass above catch the rest by measured size.
+             "[class*=nav-search] img,[class*=searchbar] img,[class*=search-bar] img,"
+             "[role=search] img,[class*=nav-] img[class*=icon],[class*=header] img[class*=icon]"
+             "{background-color:transparent !important;}"
              "img[alt*=\\\"Whole Foods\\\"],img[alt*=Prime],img[alt*=prime],img[alt*=Fresh],"
              "img[alt*=Haul],img[alt*=haul],img[alt*=Grocer],img[alt*=Luxury],img[alt*=Pharmac]"
              "{background-color:transparent !important;filter:none !important;}"
@@ -597,9 +603,13 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                  "if(isI||hasB){el.style.setProperty('filter','brightness(0) invert(1)','important');"
                    "el.__adGlyph=1;gfix++;}}"
              "}catch(e){}}"
-             "if(el.tagName&&el.tagName.toLowerCase()==='img'&&lfix<300){"
+             "if(el.tagName&&el.tagName.toLowerCase()==='img'&&lfix<500){"
                "var pw2=el.getBoundingClientRect();"
-               "if(pw2.width>10&&pw2.width<=220&&bgOf(el.parentElement||el)>0.5){"
+               // Glyph-sized art never needs a backdrop; the dark panel behind a
+               // small search-bar icon is the black box, not a feature.
+               "if(pw2.width>0&&pw2.width<=48&&pw2.height>0&&pw2.height<=48){"
+                 "el.style.setProperty('background-color','transparent','important');}"
+               "else if(pw2.width>10&&pw2.width<=220&&bgOf(el.parentElement||el)>0.5){"
                  "el.style.setProperty('background-color','transparent','important');}}"
              "if(BAD[cs.mixBlendMode]&&bfix<800){"
                "el.style.setProperty('mix-blend-mode','normal','important');"
@@ -1364,6 +1374,20 @@ static BOOL ADInTabBarChain(UIView *v){
     return NO;
 }
 
+// Search fields and nav bars draw their own background; a dark panel behind a
+// small glyph there reads as a black box rather than a backdrop.
+static BOOL ADIsChromeGlyphContext(UIView *v){
+    UIView *p = v; int d = 0;
+    while (p && d++ < 8){
+        const char *c = object_getClassName(p);
+        if (c && (strstr(c, "SearchBar")  || strstr(c, "SearchField") ||
+                  strstr(c, "NavigationBar") || strstr(c, "TextField") ||
+                  strstr(c, "SearchTextField")))
+            return YES;
+        p = p.superview;
+    }
+    return NO;
+}
 static inline BOOL ADImageIsTemplateish(UIImage *im){
     if (!im) return NO;
     if (im.renderingMode == UIImageRenderingModeAlwaysTemplate) return YES;
@@ -1466,6 +1490,7 @@ static void ADTintBarIcon(UIImageView *iv, BOOL selected){
         }
     } @catch(...) {}
 }
+static BOOL gADSettingImage = NO;   // re-entrancy guard for the setImage: hooks
 static BOOL gBarFixPending = NO;
 static BOOL gBarCorrecting  = NO;
 static void ADApplyBarTint(UIView *container, BOOL selected);
@@ -2294,7 +2319,10 @@ static void ADRunProbe(void){
         }
 
         // (1) Backdrop for TRANSPARENT images — cheap, always-on-when-enabled.
-        if (gP.imageBackdrop){
+        // Never behind glyph-sized artwork, and never inside search/nav chrome:
+        // that is what produced the black boxes behind the search-bar icons.
+        CGFloat bw = self.bounds.size.width, bh = self.bounds.size.height;
+        if (gP.imageBackdrop && (bw > 48 || bh > 48) && !ADIsChromeGlyphContext(self)){
             UIImage *img = self.image;
             if (img && img.CGImage){
                 CGImageAlphaInfo a = CGImageGetAlphaInfo(img.CGImage);
@@ -2477,7 +2505,7 @@ static UIImage *ADGlyphify(UIImage *img){
 
 %hook UIImageView
 - (void)setImage:(UIImage *)image {
-    if (!image || ADIsWebKitOwned(self)) {
+    if (!image || ADIsWebKitOwned(self) || !ADRecolorOn() || gADSettingImage) {
         %orig;
         return;
     }
@@ -2496,7 +2524,9 @@ static UIImage *ADGlyphify(UIImage *img){
         // conversion.
         if (ADInTabBarChain(self)) {
             %orig;                                       // install the artwork
-            ADTintBarIcon(self, ADViewIsSelectedInBar(self));  // then templatise + colour
+            gADSettingImage = YES;                       // our own writes must not re-enter
+            @try { ADTintBarIcon(self, ADViewIsSelectedInBar(self)); } @catch(...) {}
+            gADSettingImage = NO;
             return;
         }
         UIImage *tpl = ADGlyphify(image);
@@ -2514,7 +2544,7 @@ static UIImage *ADGlyphify(UIImage *img){
 // the filters control, the recent-search rows.
 %hook UIButton
 - (void)setImage:(UIImage *)image forState:(UIControlState)state {
-    if (!image) {
+    if (!image || !ADRecolorOn() || gADSettingImage) {
         %orig;
         return;
     }
