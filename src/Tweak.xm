@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.40.0"
+#define AD_VERSION "v5.41.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -1306,7 +1306,13 @@ static void ADApplyBarTint(UIView *container, BOOL selected){
 }
 
 // ─── UIView / UILabel / controls ──────────────────────────────────────────────────
+static void ADInvertRNSVG(UIView *v);
+
 %hook UIView
+- (void)didMoveToWindow {
+    %orig;
+    @try { if (ADRecolorOn() && self.window) ADInvertRNSVG(self); } @catch(...) {}
+}
 - (void)setBackgroundColor:(UIColor *)color {
     if (!ADRecolorOn() || !color || ADIsOwnColor(color) || ADIsWebKitOwned(self)) {
         %orig;
@@ -2362,15 +2368,41 @@ static BOOL ADIsTabBarItemish(UIView *v){
 + (id)filterWithType:(NSString *)type;
 @end
 static const void *kADRNInvertKey = &kADRNInvertKey;
-static int gRNLogLeft = 6;
+static int gRNLogLeft = 8;
+static BOOL ADHasRNAncestor(UIView *v){
+    UIView *p = v; int d = 0;
+    while (p && d++ < 10){
+        const char *pc = object_getClassName(p);
+        if (pc && (strncmp(pc, "RCT", 3) == 0 || strncmp(pc, "RNS", 3) == 0)) return YES;
+        p = p.superview;
+    }
+    return NO;
+}
 static void ADInvertRNSVG(UIView *v){
     @try {
         const char *cn = object_getClassName(v);
-        if (!cn || strncmp(cn, "RNSVG", 5) != 0) return;
-        if (strcmp(cn, "RNSVGSvgView") != 0) return;      // root only; children ride along
+        if (!cn) return;
         CGFloat w = v.bounds.size.width, h = v.bounds.size.height;
         if (w < 6 || w > 48 || h < 6 || h > 48) return;   // icons, not illustrations
-        if (objc_getAssociatedObject(v, kADRNInvertKey)) return;
+        BOOL take = (strcmp(cn, "RNSVGSvgView") == 0);    // root only; children ride along
+        if (!take && [v isKindOfClass:[UILabel class]]){
+            // The kebab: a tiny RN-hosted UILabel whose dots are baked into layer
+            // contents, where setTextColor cannot reach -- the sweep recoloured the
+            // property and the pixels never changed. Short text only, so price and
+            // badge labels stay out of the net.
+            UILabel *l = (UILabel *)v;
+            if (l.text.length <= 3 && v.layer.contents != nil && ADHasRNAncestor(v)){
+                UIColor *tc = l.textColor ?: v.tintColor;
+                CGFloat r,g,b,a;
+                if (tc && [tc getRed:&r green:&g blue:&b alpha:&a] &&
+                    (0.2126*r + 0.7152*g + 0.0722*b) < 0.35) take = YES;
+            }
+        }
+        if (!take) return;
+        // Heal, don't just flag: React clears layer.filters when it re-renders a
+        // mounted view, which is why every icon reverted to black after visiting
+        // the dots menu. If our filters are gone, put them back.
+        if (objc_getAssociatedObject(v, kADRNInvertKey) && v.layer.filters.count) return;
         Class F = NSClassFromString(@"CAFilter");
         if (!F) return;
         id inv = [F filterWithType:@"colorInvert"];
@@ -2379,7 +2411,7 @@ static void ADInvertRNSVG(UIView *v){
         @try { [hue setValue:@(M_PI) forKey:@"inputAngle"]; } @catch(...) { hue = nil; }
         v.layer.filters = hue ? @[inv, hue] : @[inv];
         objc_setAssociatedObject(v, kADRNInvertKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (gRNLogLeft > 0){ gRNLogLeft--; ADLog(@"rnsvg inverted %.0fx%.0f", w, h); }
+        if (gRNLogLeft > 0){ gRNLogLeft--; ADLog(@"rnsvg inverted cls=%s %.0fx%.0f", cn, w, h); }
     } @catch(...) {}
 }
 
