@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.47.0"
+#define AD_VERSION "v5.48.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -171,7 +171,11 @@ static void ADPrefHex(NSDictionary *d, NSString *k, const char *def, char *out){
 
 static void ADLoadPrefs(void);
 static BOOL gPrefsLoadedOnce = NO;
-static inline void ADEnsurePrefs(void){ if (!gPrefsLoadedOnce) ADLoadPrefs(); }
+static inline void ADEnsurePrefs(void){
+    if (gPrefsLoadedOnce) return;
+    if ([NSThread isMainThread]){ ADLoadPrefs(); return; }
+    dispatch_async(dispatch_get_main_queue(), ^{ if (!gPrefsLoadedOnce) ADLoadPrefs(); });
+}
 static void ADLoadPrefs(void){
     gPrefsLoadedOnce = YES;
     // Defaults: everything a "true dark mode" wants, image inversion OFF.
@@ -1030,6 +1034,7 @@ static int gWkLogLeft = 6;
 // the page is mid-load and unthemed, the background stops being white NOW.
 static void ADPreDarken(WKWebView *wv){
     @try {
+        if (![NSThread isMainThread]) return;
         [wv evaluateJavaScript:
             @"try{if(!document.getElementById('adpre')){var s=document.createElement('style');"
              "s.id='adpre';s.textContent='html,body{background:#181a1b !important}';"
@@ -2376,7 +2381,10 @@ static UIImage *ADGlyphify(UIImage *img){
 
 %hook UIImageView
 - (void)setImage:(UIImage *)image {
-    @try { if (ADRecolorOn() && image) dispatch_async(dispatch_get_main_queue(), ^{ @try { ADLaunchWhiteGuard(self); } @catch(...) {} }); } @catch(...) {}
+    @try {
+        if (ADRecolorOn() && image && ADUptime() < 12.0)
+            dispatch_async(dispatch_get_main_queue(), ^{ @try { ADLaunchWhiteGuard(self); } @catch(...) {} });
+    } @catch(...) {}
     if (!image || ADIsWebKitOwned(self)) {
         %orig;
         return;
