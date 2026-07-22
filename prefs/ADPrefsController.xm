@@ -79,11 +79,7 @@ static void ADWriteBoth(NSString *key, id value){
 
 - (id)navigationTitle { return @"AmazonDark"; }
 
-- (NSBundle *)bundle {
-    NSBundle *b = [NSBundle bundleWithPath:AD_BUNDLE];
-    if (b) return b;
-    return %orig;
-}
+// bundle override removed with the plist loader (v5.55.0)
 
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
     @try {
@@ -108,38 +104,46 @@ static void ADWriteBoth(NSString *key, id value){
 }
 
 - (id)specifiers {
-    ADPLog("[prefs] specifiers called");
-    @try {
-        NSArray *specs = [(PSListController *)self loadSpecifiersFromPlistName:@"Root" target:self];
-        if (specs.count){
-            Ivar iv = class_getInstanceVariable(%c(PSListController), "_specifiers");
-            if (iv) object_setIvar(self, iv, specs);
-            objc_setAssociatedObject(self, "adSpecs", specs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            return specs;
-        }
-    } @catch (NSException *e) {}
-    // Fallback: build the two rows by hand so a plist problem can never take
-    // Settings down with it.
+    ADPLog("[prefs] specifiers called (manual build)");
+    // NEVER call loadSpecifiersFromPlistName:. The crash report is explicit:
+    // objc_msgSend faulted INSIDE -[PSListController loadSpecifiersFromPlistName:
+    // target:] on a garbage receiver, with our frame directly above it. Apple's
+    // plist loader is what dies, so the plist path is abandoned entirely --
+    // three rows are trivial to build directly, and every object here is one we
+    // created ourselves.
     @try {
         NSMutableArray *out = [NSMutableArray array];
-        [out addObject:[%c(PSSpecifier) groupSpecifierWithName:@"AmazonDark"]];
-        PSSpecifier *sw = [%c(PSSpecifier) preferenceSpecifierNamed:@"Enabled" target:self
-                              set:@selector(setPreferenceValue:specifier:)
-                              get:@selector(readPreferenceValue:)
-                           detail:nil cell:6 edit:nil];          // 6 = PSSwitchCell
+
+        PSSpecifier *grp = [%c(PSSpecifier) groupSpecifierWithName:@"AmazonDark"];
+        @try { [grp setProperty:@"True dark mode for the Amazon app. Toggle, then respring; the theme applies on the next Amazon launch."
+                         forKey:@"footerText"]; } @catch (NSException *e) {}
+        [out addObject:grp];
+
+        PSSpecifier *sw = [%c(PSSpecifier) preferenceSpecifierNamed:@"Enabled"
+                              target:self
+                                 set:@selector(setPreferenceValue:specifier:)
+                                 get:@selector(readPreferenceValue:)
+                              detail:nil cell:6 edit:nil];      // 6 = PSSwitchCell
         [sw setProperty:@"enabled" forKey:@"key"];
         [sw setProperty:AD_DOMAIN  forKey:@"defaults"];
         [sw setProperty:@YES       forKey:@"default"];
         [out addObject:sw];
-        PSSpecifier *bt = [%c(PSSpecifier) preferenceSpecifierNamed:@"Respring" target:self
-                              set:NULL get:NULL detail:nil cell:13 edit:nil];   // 13 = PSButtonCell
+
+        PSSpecifier *bt = [%c(PSSpecifier) preferenceSpecifierNamed:@"Respring"
+                              target:self set:NULL get:NULL
+                              detail:nil cell:13 edit:nil];     // 13 = PSButtonCell
         @try { [bt setButtonAction:@selector(adRespring)]; } @catch (NSException *e) {}
         [out addObject:bt];
+
         Ivar iv = class_getInstanceVariable(%c(PSListController), "_specifiers");
         if (iv) object_setIvar(self, iv, out);
         objc_setAssociatedObject(self, "adSpecs", out, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ADPLog("[prefs] specifiers built OK");
         return out;
-    } @catch (NSException *e) { return @[]; }
+    } @catch (NSException *e) {
+        ADPLog("[prefs] EXCEPTION building specifiers");
+        return @[];
+    }
 }
 
 %new

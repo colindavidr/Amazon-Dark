@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.54.0"
+#define AD_VERSION "v5.55.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -517,6 +517,10 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              // stops and only neutralise gradients that actually resolve light, so
              // decorative dark gradients are left alone.
              "if(lfix<300){var gbi=cs.backgroundImage||'';"
+               "if(gbi.indexOf('gradient')>=0&&el.closest){"
+                 "try{if(el.closest('[data-hook*=review],[class*=a-expander],[class*=expander-partial]')){"
+                   "el.style.setProperty('background-image','none','important');"
+                   "el.style.setProperty('background','none','important');}}catch(e){}}"
                "if(gbi.indexOf('gradient')>=0){var g2=el.getBoundingClientRect();"
                  "if(g2.width>120&&g2.height>28){var gmx=0,gm,gre=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/g;"
                    "while((gm=gre.exec(gbi))){var gl2=0.2126*ch(+gm[1])+0.7152*ch(+gm[2])+0.0722*ch(+gm[3]);"
@@ -614,21 +618,6 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "var fl=lum(cs.color);if(fl===null)continue;"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
-           // READ-MORE SCRIM. CSS alone has now missed this twice, so do it by
-           // mechanism: inside any review/expander subtree, an element painting a
-           // gradient is the fade -- Amazon uses no decorative gradients there.
-           // Bounded scan so a long review page cannot turn this into a hot loop.
-           "try{var FDR=document.querySelectorAll("
-             "'[class*=expander],[class*=review],[data-hook*=review],[class*=cr-]');"
-             "var fdone=0;"
-             "for(var f1=0;f1<FDR.length&&f1<40&&fdone<60;f1++){"
-               "var fkids=FDR[f1].querySelectorAll('*');"
-               "for(var f2=0;f2<fkids.length&&f2<300&&fdone<60;f2++){var fx=fkids[f2];"
-                 "var fbi=getComputedStyle(fx).backgroundImage||'';"
-                 "if(fbi.indexOf('gradient')>=0){"
-                   "fx.style.setProperty('background-image','none','important');"
-                   "fx.style.setProperty('background','none','important');fdone++;}}}"
-           "}catch(e){}"
            // HEARTS. Two parts, kept separate so they cannot fight: darken the circle
            // (a light background on the element or a near ancestor) and lighten the
            // glyph by whatever actually draws it. Doing this by mechanism avoids the
@@ -753,8 +742,8 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                  "htree=' HEARTTREE='+hd.join(' ~ ');}"
              "}catch(e){}"
              "var fd=[];try{var FQ=document.querySelectorAll("
-               "'[class*=expander] *,[data-hook*=review] *,[class*=cr-] *');"
-               "for(var y2=0;y2<FQ.length&&y2<600&&fd.length<4;y2++){var fe2=FQ[y2];"
+               "'[class*=a-expander] *,[data-hook*=review] *');"
+               "for(var y2=0;y2<FQ.length&&y2<250&&fd.length<3;y2++){var fe2=FQ[y2];"
                  "var c2=getComputedStyle(fe2),b2=c2.backgroundImage||'';"
                  "var pa2=getComputedStyle(fe2,'::after'),pb2=getComputedStyle(fe2,'::before');"
                  "var pab=(pa2&&pa2.backgroundImage!=='none')?pa2.backgroundImage:"
