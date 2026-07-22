@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.50.0"
+#define AD_VERSION "v5.51.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -171,7 +171,8 @@ static void ADPrefHex(NSDictionary *d, NSString *k, const char *def, char *out){
 
 static void ADLoadPrefs(void);
 static BOOL gPrefsLoadedOnce = NO;
-static NSString *gADBootCache = nil;   // rebuilt only when prefs change
+static NSString *gADBootCache = nil;   // rebuilt only when prefs change; ALL access via ADBootQueue
+static dispatch_queue_t ADBootQueue(void);
 static inline void ADEnsurePrefs(void){
     if (gPrefsLoadedOnce) return;
     if ([NSThread isMainThread]){ ADLoadPrefs(); return; }
@@ -179,7 +180,7 @@ static inline void ADEnsurePrefs(void){
 }
 static void ADLoadPrefs(void){
     gPrefsLoadedOnce = YES;
-    gADBootCache = nil;                // prefs feed the script; invalidate
+    dispatch_async(ADBootQueue(), ^{ gADBootCache = nil; });   // serialized invalidation
     // Defaults: everything a "true dark mode" wants, image inversion OFF.
     gP.enabled = YES; gP.webDarkReader = YES; gP.nativeTheme = YES;
     gP.imageBackdrop = YES;
@@ -380,12 +381,15 @@ static NSString *ADThemeLiteral(void){
 
 // HEAVY: full Dark Reader UMD + first enable(). Injected ONCE per document at
 // documentStart via a WKUserScript. The 346KB engine is parsed a single time per page.
-static NSString *ADDarkReaderBootstrap(void){
-    NSString *cached = gADBootCache;      // local strong ref: safe vs invalidation
-    if (cached) return cached;
+static dispatch_queue_t ADBootQueue(void){
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("com.amazondark.boot", DISPATCH_QUEUE_SERIAL); });
+    return q;
+}
+static NSString *ADDarkReaderBootstrapBuild(void){
     NSString *dr = ADBundledDarkReaderJS();
     if (!dr.length) return nil;
-    gADBootCache = [NSString stringWithFormat:
+    return [NSString stringWithFormat:
         @"(function(){try{"
          "if(window.__AMZDARK_LOADED__)return;window.__AMZDARK_LOADED__=1;"
          "try{window.__AD_EARLY__='';"
@@ -734,7 +738,14 @@ static NSString *ADDarkReaderBootstrap(void){
          "try{document.addEventListener('visibilitychange',function(){if(!document.hidden)window.__AMZDARK_APPLY__();});}catch(e){}"
          "}}catch(e){}})();",
         dr, [NSString stringWithUTF8String:gP.fgHex], ADThemeLiteral(), ADFixesLiteral()];
-    return gADBootCache;
+}
+static NSString *ADDarkReaderBootstrap(void){
+    __block NSString *out = nil;
+    dispatch_sync(ADBootQueue(), ^{
+        if (!gADBootCache) gADBootCache = ADDarkReaderBootstrapBuild();
+        out = gADBootCache;
+    });
+    return out;
 }
 
 // LIGHT: re-apply the theme. MUST be a no-op when the page is already themed.
