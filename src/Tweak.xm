@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.37.0"
+#define AD_VERSION "v5.38.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -297,8 +297,9 @@ static NSString *ADFixesLiteral(void){
              "[class*=heart] svg,[class*=wish] svg,[class*=lists-framework] svg,"
              "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon]"
              "{filter:brightness(0) invert(1) !important;}"
-             "[class*=lists-framework-unfill],[class*=heart-placeholder]"
-             "{background-color:transparent !important;}"
+             "[class*=lists-framework-unfill][class*=lists-framework-unfill][class*=lists-framework-unfill],"
+             "[class*=heart-placeholder][class*=heart-placeholder][class*=heart-placeholder]"
+             "{background-color:transparent !important;background-image:inherit;}"
              // Heart circle. The button behind the heart is a light/white disc; on a
              // dark theme it reads as a bright blob that hides the glyph. Darken it at
              // documentStart so there is never a white flash. (The earlier
@@ -308,7 +309,7 @@ static NSString *ADFixesLiteral(void){
              // device the heart rendered white first and went black only when our
              // invert caught up with it -- so the only job here is the disc.
              "[class*=heart]:not(img):not([class*=heart-placeholder]),"
-             "[class*=lists-framework]:not(img):not([class*=unfilled]),"
+             "[class*=lists-framework]:not(img):not([class*=unfill]),"
              "[class*=wish]:not(img)"
              "{background-color:#181a1b !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
@@ -380,7 +381,7 @@ static NSString *ADDarkReaderBootstrap(void){
            // looser size cap, because the heart measures 33x33 against a 32 limit and
            // was failing by a single pixel, while sbs-pill-image at 34x34 is a product
            // thumbnail that must keep its colour.
-           "var ICON=/heart|wish|favor|lists-framework|a-icon|icon-|-icon/i;"           // collect() walks document.body's DESCENDANTS, so <html> and <body>
+           "var ICON=/heart|wish|favor|lists-framework|a-icon|icon-|-icon|^_[a-z0-9]{4,8}_/i;"           // collect() walks document.body's DESCENDANTS, so <html> and <body>
            // themselves are never in els. A page that paints its own light background
            // on body -- Amazon Pharmacy's pink -- is invisible to every per-element
            // rule, and its inline/high-specificity value also overrides Dark Reader's
@@ -513,7 +514,7 @@ static NSString *ADDarkReaderBootstrap(void){
              "for(var hz=0;hz<HRT.length;hz++){var he=HRT[hz];var hcs=getComputedStyle(he);"
                // circle: darken this element's light bg, and the first light ancestor bg
                "var hcl2=he.className;if(hcl2&&hcl2.baseVal!==undefined)hcl2=hcl2.baseVal;hcl2=String(hcl2||'');"
-               "if(/unfill|placehold/i.test(hcl2)){he.style.removeProperty('background-color');}"
+               "if(/unfill|placehold/i.test(hcl2)){he.style.setProperty('background-color','transparent','important');}"
                "else if(lum(hcs.backgroundColor)>0.5){he.style.setProperty('background-color',BG,'important');}"
                "var pe=he.parentElement,pd=0;"
                "while(pe&&pd++<3){var pl=lum(getComputedStyle(pe).backgroundColor);"
@@ -566,7 +567,8 @@ static NSString *ADDarkReaderBootstrap(void){
                "var cn=pe.className;if(cn&&cn.baseVal!==undefined)cn=cn.baseVal;"
                "cn=(cn||'').toString().split(' ')[0].slice(0,22);"
                "var k=kind+'.'+cn;if(seen[k])continue;seen[k]=1;"
-               "acc.push(k+'@'+Math.round(rc.width)+'x'+Math.round(rc.height)+'/'+pcs.color);}"
+               "acc.push(k+'@'+Math.round(rc.width)+'x'+Math.round(rc.height)+'/'+pcs.color"
+                 "+'/f:'+((pcs.filter&&pcs.filter!=='none')?'Y':'-'));}"
              // also name whatever is still LIGHT, which is what the Alexa card is
              "var lt=[];for(var w=0;w<els.length&&lt.length<3;w++){var le=els[w];"
                "var lcs=getComputedStyle(le),ll=lum(lcs.backgroundColor);"
@@ -627,7 +629,8 @@ static NSString *ADDarkReaderBootstrap(void){
                    "for(var ci2=0;ci2<nd.children.length;ci2++)stk.push(nd.children[ci2]);}"
                  "htree=' HEARTTREE='+hd.join(' ~ ');}"
              "}catch(e){}"
-             "pr=(acc.length?(' probe='+acc.join(' ')):' probe=none')"
+             "pr=' url='+String(location.pathname||'').slice(0,28)"
+               "+(acc.length?(' probe='+acc.join(' ')):' probe=none')"
                "+(lt.length?(' light='+lt.join(' ')):'')"
                "+(ht.length?(' HEART='+ht.join(' ')):'')+htree;}"
            "}catch(e){pr=' probeERR';}"
@@ -2276,6 +2279,22 @@ static UIImage *ADGlyphify(UIImage *img){
             ADScheduleBarCorrection();
         }
     } @catch(...) {}
+}
+// The residual lag is upstream of us: Amazon flips `selected` only partway
+// through its own transition, and no amount of snap-on-assignment can beat the
+// moment the assignment happens. Finger-down is the earliest truthful signal --
+// paint the tapped tab white immediately and let the deferred correction pass
+// re-read real state afterwards, which also cleans up a cancelled touch.
+- (BOOL)beginTrackingWithTouch:(UITouch *)touch withEvent:(UIEvent *)event {
+    BOOL r = %orig;
+    @try {
+        if (ADRecolorOn() && ADInTabBarChain(self)){
+            ADRememberBarSelection(self, YES);
+            ADApplyBarTint(self, YES);
+            ADScheduleBarCorrection();
+        }
+    } @catch(...) {}
+    return r;
 }
 %end
 
