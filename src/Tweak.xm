@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.41.0"
+#define AD_VERSION "v5.42.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -1200,6 +1200,11 @@ static UIColor *ADBarBlue(void){
 static UIColor *ADBarWhite(void){ return ADColorFromHex(gP.fgHex); }   // marked-own ~white
 static const void *kADBarSelKey = &kADBarSelKey;
 static const void *kADIndicatorKey = &kADIndicatorKey;
+// React-Native glyph invert bookkeeping (used by the CALayer setFilters guard
+// below and the ADInvertRNSVG helper further down).
+static const void *kADRNInvertKey  = &kADRNInvertKey;
+static const void *kADRNFiltersKey = &kADRNFiltersKey;
+static const void *kADRNCheckKey   = &kADRNCheckKey;
 static inline BOOL ADIsTaggedIndicator(UIView *v){
     return v && objc_getAssociatedObject(v, kADIndicatorKey) != nil;
 }
@@ -1310,6 +1315,15 @@ static void ADInvertRNSVG(UIView *v);
 
 %hook UIView
 - (void)didMoveToWindow {
+    %orig;
+    @try { if (ADRecolorOn() && self.window) ADInvertRNSVG(self); } @catch(...) {}
+}
+// didMoveToWindow fires BEFORE layout -- a freshly mounted icon still reads
+// 0x0 there and the size gate rejects it (the gear's revert path). Layout is
+// when bounds are real, and it re-runs when React patches a mounted view, so
+// this is both the correct first application point and a healing pass. The
+// helper's first line is a class-name strcmp, so the global cost is nil.
+- (void)layoutSubviews {
     %orig;
     @try { if (ADRecolorOn() && self.window) ADInvertRNSVG(self); } @catch(...) {}
 }
@@ -1611,6 +1625,26 @@ static NSAttributedString *ADRecolorAttributedString(NSAttributedString *in){
         if (!m) m = color;
         %orig(m);
         return;
+    } @catch(...) {}
+    %orig;
+}
+- (void)setFilters:(NSArray *)filters {
+    @try {
+        id d = self.delegate;
+        if (d && [d isKindOfClass:[UIView class]] &&
+            objc_getAssociatedObject(d, kADRNInvertKey)){
+            NSArray *ours = objc_getAssociatedObject(d, kADRNFiltersKey);
+            if (ours.count){
+                BOOL has = NO;
+                for (id f in (filters ?: @[])){ if ([ours containsObject:f]){ has = YES; break; } }
+                if (!has){
+                    NSMutableArray *m2 = [NSMutableArray arrayWithArray:(filters ?: @[])];
+                    [m2 addObjectsFromArray:ours];
+                    %orig(m2);
+                    return;
+                }
+            }
+        }
     } @catch(...) {}
     %orig;
 }
@@ -2367,7 +2401,6 @@ static BOOL ADIsTabBarItemish(UIView *v){
 @interface CAFilter : NSObject
 + (id)filterWithType:(NSString *)type;
 @end
-static const void *kADRNInvertKey = &kADRNInvertKey;
 static int gRNLogLeft = 8;
 static BOOL ADHasRNAncestor(UIView *v){
     UIView *p = v; int d = 0;
@@ -2386,16 +2419,27 @@ static void ADInvertRNSVG(UIView *v){
         if (w < 6 || w > 48 || h < 6 || h > 48) return;   // icons, not illustrations
         BOOL take = (strcmp(cn, "RNSVGSvgView") == 0);    // root only; children ride along
         if (!take && [v isKindOfClass:[UILabel class]]){
-            // The kebab: a tiny RN-hosted UILabel whose dots are baked into layer
-            // contents, where setTextColor cannot reach -- the sweep recoloured the
-            // property and the pixels never changed. Short text only, so price and
-            // badge labels stay out of the net.
-            UILabel *l = (UILabel *)v;
-            if (l.text.length <= 3 && v.layer.contents != nil && ADHasRNAncestor(v)){
-                UIColor *tc = l.textColor ?: v.tintColor;
-                CGFloat r,g,b,a;
-                if (tc && [tc getRed:&r green:&g blue:&b alpha:&a] &&
-                    (0.2126*r + 0.7152*g + 0.0722*b) < 0.35) take = YES;
+            // The kebab: an RN-hosted UILabel whose dots are baked into layer
+            // contents. The colour-property gate could never match -- the sweep
+            // recolours textColor, so the PROPERTY reads light while the PIXELS
+            // stay dark (v5.41.0 logged zero cls=UILabel for exactly this
+            // reason). So judge by pixels: render the label once and ask
+            // ADIsDarkGlyph. A label whose text genuinely went light fails the
+            // darkness test and is left alone; capped attempts keep the render
+            // cost bounded while late-drawn contents still get a look.
+            if (v.layer.contents != nil && ADHasRNAncestor(v)){
+                NSNumber *att = objc_getAssociatedObject(v, kADRNCheckKey);
+                if (att.intValue < 4){
+                    objc_setAssociatedObject(v, kADRNCheckKey, @(att.intValue + 1),
+                                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    @try {
+                        UIGraphicsBeginImageContextWithOptions(v.bounds.size, NO, 1);
+                        [v drawViewHierarchyInRect:v.bounds afterScreenUpdates:NO];
+                        UIImage *im = UIGraphicsGetImageFromCurrentImageContext();
+                        UIGraphicsEndImageContext();
+                        if (im && ADIsDarkGlyph(im)) take = YES;
+                    } @catch(...) {}
+                }
             }
         }
         if (!take) return;
@@ -2409,7 +2453,9 @@ static void ADInvertRNSVG(UIView *v){
         if (!inv) return;
         id hue = [F filterWithType:@"hueRotate"];
         @try { [hue setValue:@(M_PI) forKey:@"inputAngle"]; } @catch(...) { hue = nil; }
-        v.layer.filters = hue ? @[inv, hue] : @[inv];
+        NSArray *ours = hue ? @[inv, hue] : @[inv];
+        v.layer.filters = ours;
+        objc_setAssociatedObject(v, kADRNFiltersKey, ours, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(v, kADRNInvertKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (gRNLogLeft > 0){ gRNLogLeft--; ADLog(@"rnsvg inverted cls=%s %.0fx%.0f", cn, w, h); }
     } @catch(...) {}
