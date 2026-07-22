@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.56.0"
+#define AD_VERSION "v5.57.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -338,8 +338,10 @@ static NSString *ADFixesLiteral(void){
              // and display:none is confined to pseudo-elements, which draw
              // nothing but the fade itself.
              "[class*=expander] [class*=fade],[class*=fade-out],"
-             "[data-hook*=review] [class*=fade],[class*=expander-fade]"
-             "{background:none !important;background-image:none !important;}"
+             "[data-hook*=review] [class*=fade],[class*=expander-fade],"
+             "[class*=a-reactive-container],[class*=reactive-contain]"
+             "{background:transparent !important;background-image:none !important;"
+             "box-shadow:none !important;}"
              "[class*=a-expander-partial]::before,[class*=a-expander-partial]::after,"
              "[class*=expander-content]::before,[class*=expander-content]::after,"
              "[class*=a-expander-partial-collapse-container]::after,"
@@ -517,7 +519,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              // inline style it skipped. Correct by COMPUTED value so the mechanism
              // does not matter. els is in document order, so an ancestor is darkened
              // before its children are contrast-checked against it.
-             "if(lfix<300){var pl=lum(cs.backgroundColor);"
+             "if(lfix<500){var pl=lum(cs.backgroundColor);"
                "if(pl!==null&&pl>0.55){el.style.setProperty('background-color',BG,'important');lfix++;}}"
              // LIGHT GRADIENTS. lfix read 0 on every line while a 430x627 light panel
              // sat on screen, because a gradient lives in background-IMAGE and is
@@ -525,7 +527,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              // div.wd-backdrop-gradient, the 'Researched by Alexa' card. Parse the
              // stops and only neutralise gradients that actually resolve light, so
              // decorative dark gradients are left alone.
-             "if(lfix<300){var gbi=cs.backgroundImage||'';"
+             "if(lfix<500){var gbi=cs.backgroundImage||'';"
                "if(gbi.indexOf('gradient')>=0&&el.closest){"
                  "try{if(el.closest('[data-hook*=review],[class*=a-expander],[class*=expander-partial]')){"
                    "el.style.setProperty('background-image','none','important');"
@@ -758,6 +760,8 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                  "var pab=(pa2&&pa2.backgroundImage!=='none')?pa2.backgroundImage:"
                    "((pb2&&pb2.backgroundImage!=='none')?pb2.backgroundImage:'');"
                  "var src2=(b2.indexOf('gradient')>=0)?b2:((pab.indexOf('gradient')>=0)?('PSEUDO:'+pab):'');"
+                 "if(!src2){var lb2=lum(c2.backgroundColor);"
+                   "if(lb2!==null&&lb2>0.5)src2='LIGHTBG:'+c2.backgroundColor;}"
                  "if(!src2)continue;"
                  "var r2=fe2.getBoundingClientRect();"
                  "var cn4=fe2.className;if(cn4&&cn4.baseVal!==undefined)cn4=cn4.baseVal;"

@@ -1,0 +1,10 @@
+{
+    CFBundleDevelopmentRegion = English;
+    CFBundleExecutable = ADPrefs;
+    CFBundleIdentifier = "com.colindavidr.amazondark.prefs";
+    CFBundleInfoDictionaryVersion = "6.0";
+    CFBundleName = AmazonDark;
+    CFBundlePackageType = BNDL;
+    CFBundleVersion = "5.55.0";
+    NSPrincipalClass = ADRootListController;
+}

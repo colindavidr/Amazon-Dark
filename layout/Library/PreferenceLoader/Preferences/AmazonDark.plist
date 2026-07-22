@@ -1,10 +1,10 @@
 {
     entry = {
-        bundle = ADPrefs;
-        cell = PSLinkCell;
-        detail = PSListController;
-        icon = "icon.png";
-        isController = 1;
-        label = AmazonDark;
+        cell = PSSwitchCell;
+        label = "AmazonDark";
+        key = "enabled";
+        default = 1;
+        defaults = "com.colindavidr.amazondark";
+        PostNotification = "com.colindavidr.amazondark/prefs-changed";
     };
 }
