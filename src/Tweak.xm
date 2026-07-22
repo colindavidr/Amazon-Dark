@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.51.0"
+#define AD_VERSION "v5.52.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -1420,15 +1420,6 @@ static void ADInvertRNSVG(UIView *v);
     %orig;
     @try { if (ADRecolorOn() && self.window) ADInvertRNSVG(self); } @catch(...) {}
 }
-// didMoveToWindow fires BEFORE layout -- a freshly mounted icon still reads
-// 0x0 there and the size gate rejects it (the gear's revert path). Layout is
-// when bounds are real, and it re-runs when React patches a mounted view, so
-// this is both the correct first application point and a healing pass. The
-// helper's first line is a class-name strcmp, so the global cost is nil.
-- (void)layoutSubviews {
-    %orig;
-    @try { if (ADRecolorOn() && self.window) ADInvertRNSVG(self); } @catch(...) {}
-}
 - (void)setBackgroundColor:(UIColor *)color {
     if (!ADRecolorOn() || !color || ADIsOwnColor(color) || ADIsWebKitOwned(self)) {
         %orig;
@@ -2398,10 +2389,6 @@ static UIImage *ADGlyphify(UIImage *img){
 
 %hook UIImageView
 - (void)setImage:(UIImage *)image {
-    @try {
-        if (ADRecolorOn() && image && ADUptime() < 12.0)
-            dispatch_async(dispatch_get_main_queue(), ^{ @try { ADLaunchWhiteGuard(self); } @catch(...) {} });
-    } @catch(...) {}
     if (!image || ADIsWebKitOwned(self)) {
         %orig;
         return;
@@ -2520,7 +2507,7 @@ static int gBarTapLog = 4;
                 static const int64_t d_ms[] = {0, 250, 700};
                 for (int i = 0; i < 3; i++){
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, d_ms[i]*1000000LL),
-                        dispatch_get_main_queue(), ^{ @try { ADScheduleBarCorrection(); ADSweep(); } @catch(...) {} });
+                        dispatch_get_main_queue(), ^{ @try { ADScheduleBarCorrection(); } @catch(...) {} });
                 }
                 break;
             }
@@ -2572,7 +2559,7 @@ static void ADInvertRNSVG(UIView *v){
         CGFloat w = v.bounds.size.width, h = v.bounds.size.height;
         if (w < 3 || w > 48 || h < 3 || h > 48) return;   // icons, not illustrations
         BOOL take = (strcmp(cn, "RNSVGSvgView") == 0);    // root only; children ride along
-        if (!take && [v isKindOfClass:[UILabel class]]){
+        if (0 && !take && [v isKindOfClass:[UILabel class]]){   // DISABLED in v5.52.0 stability build
             // The kebab: an RN-hosted UILabel whose dots are baked into layer
             // contents. The colour-property gate could never match -- the sweep
             // recolours textColor, so the PROPERTY reads light while the PIXELS
