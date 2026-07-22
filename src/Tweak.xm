@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.42.0"
+#define AD_VERSION "v5.43.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -1205,6 +1205,7 @@ static const void *kADIndicatorKey = &kADIndicatorKey;
 static const void *kADRNInvertKey  = &kADRNInvertKey;
 static const void *kADRNFiltersKey = &kADRNFiltersKey;
 static const void *kADRNCheckKey   = &kADRNCheckKey;
+static BOOL ADBackdropIsDark(UIView *v);
 static inline BOOL ADIsTaggedIndicator(UIView *v){
     return v && objc_getAssociatedObject(v, kADIndicatorKey) != nil;
 }
@@ -1896,20 +1897,32 @@ static void ADProbeTree(UIView *v, int depth, int *found){
         // would explain glyphs no pass has ever touched.
         @try {
             CGFloat gw = v.bounds.size.width, gh = v.bounds.size.height;
-            if (gw >= 8 && gw <= 48 && gh >= 8 && gh <= 48 && !v.hidden){
+            if (gw >= 4 && gw <= 48 && gh >= 4 && gh <= 48 && !v.hidden){
                 BOOL isIv = [v isKindOfClass:[UIImageView class]];
+                BOOL isLb = [v isKindOfClass:[UILabel class]];
                 UIImage *gi = isIv ? ((UIImageView *)v).image : nil;
                 BOOL layerImg = !isIv && v.layer.contents != nil;
-                if (gi || layerImg){
+                if (gi || layerImg || isLb){
                     NSString *gk = [NSString stringWithFormat:@"G%s%.0fx%.0f",
                                     object_getClassName(v), gw, gh];
                     if (ADProbeFirstTime(gk)){
                         UIColor *tc = v.tintColor; CGFloat tr,tg,tb,ta; double tl = -1;
                         if (tc && [tc getRed:&tr green:&tg blue:&tb alpha:&ta]) tl = 0.2126*tr+0.7152*tg+0.0722*tb;
-                        ADLog(@"  probe: GLYPH %s %.0fx%.0f img=%d dark=%d tmpl=%d layer=%d tint=%.2f",
-                              object_getClassName(v), gw, gh, gi?1:0,
-                              gi?ADIsDarkGlyph(gi):0, (gi && ADImageIsTemplateish(gi))?1:0,
-                              layerImg?1:0, tl);
+                        if (isLb){
+                            UILabel *pl = (UILabel *)v;
+                            UIColor *ptc = pl.textColor; CGFloat pr,pg,pb,pa; double ptl = -1;
+                            if (ptc && [ptc getRed:&pr green:&pg blue:&pb alpha:&pa]) ptl = 0.2126*pr+0.7152*pg+0.0722*pb;
+                            NSString *pt = pl.text.length ? [pl.text substringToIndex:MIN((NSUInteger)6, pl.text.length)] : @"";
+                            ADLog(@"  probe: GLYPH %s %.0fx%.0f LBL txt='%s' tl=%.2f cont=%d bkd=%d tint=%.2f",
+                                  object_getClassName(v), gw, gh,
+                                  pt.UTF8String ?: "", ptl, v.layer.contents?1:0,
+                                  ADBackdropIsDark(v)?1:0, tl);
+                        } else {
+                            ADLog(@"  probe: GLYPH %s %.0fx%.0f img=%d dark=%d tmpl=%d layer=%d tint=%.2f",
+                                  object_getClassName(v), gw, gh, gi?1:0,
+                                  gi?ADIsDarkGlyph(gi):0, (gi && ADImageIsTemplateish(gi))?1:0,
+                                  layerImg?1:0, tl);
+                        }
                         (*found)++;
                     }
                 }
@@ -2402,21 +2415,25 @@ static BOOL ADIsTabBarItemish(UIView *v){
 + (id)filterWithType:(NSString *)type;
 @end
 static int gRNLogLeft = 8;
-static BOOL ADHasRNAncestor(UIView *v){
-    UIView *p = v; int d = 0;
-    while (p && d++ < 10){
-        const char *pc = object_getClassName(p);
-        if (pc && (strncmp(pc, "RCT", 3) == 0 || strncmp(pc, "RNS", 3) == 0)) return YES;
+static BOOL ADBackdropIsDark(UIView *v){
+    UIView *p = v.superview; int d = 0;
+    while (p && d++ < 12){
+        UIColor *bg = p.backgroundColor;
+        if (bg){
+            CGFloat r,g,b,a;
+            if ([bg getRed:&r green:&g blue:&b alpha:&a] && a > 0.5)
+                return (0.2126*r + 0.7152*g + 0.0722*b) < 0.45;
+        }
         p = p.superview;
     }
-    return NO;
+    return YES;   // themed app: unknown means dark
 }
 static void ADInvertRNSVG(UIView *v){
     @try {
         const char *cn = object_getClassName(v);
         if (!cn) return;
         CGFloat w = v.bounds.size.width, h = v.bounds.size.height;
-        if (w < 6 || w > 48 || h < 6 || h > 48) return;   // icons, not illustrations
+        if (w < 3 || w > 48 || h < 3 || h > 48) return;   // icons, not illustrations
         BOOL take = (strcmp(cn, "RNSVGSvgView") == 0);    // root only; children ride along
         if (!take && [v isKindOfClass:[UILabel class]]){
             // The kebab: an RN-hosted UILabel whose dots are baked into layer
@@ -2427,7 +2444,7 @@ static void ADInvertRNSVG(UIView *v){
             // ADIsDarkGlyph. A label whose text genuinely went light fails the
             // darkness test and is left alone; capped attempts keep the render
             // cost bounded while late-drawn contents still get a look.
-            if (v.layer.contents != nil && ADHasRNAncestor(v)){
+            if (w >= 6 && h >= 6 && v.layer.contents != nil && ADBackdropIsDark(v)){
                 NSNumber *att = objc_getAssociatedObject(v, kADRNCheckKey);
                 if (att.intValue < 4){
                     objc_setAssociatedObject(v, kADRNCheckKey, @(att.intValue + 1),
