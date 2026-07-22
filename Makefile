@@ -30,17 +30,14 @@ before-all::
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
-# Preference bundle with an INTENTIONALLY EMPTY executable (v5.63.0).
-# Settings will not load a bundle that has no executable, but every bundle
-# that contained our code faulted SIGBUS inside Settings. dlopen always
-# succeeded though -- the ctor logged every time -- so the executable exists
-# to satisfy the loader and contains nothing. NSPrincipalClass points at
-# Apple's PSListController, which renders Root.plist itself.
+# Preference bundle -- real controller, CBR structure.
+# Viable now that CI builds on macOS: the Linux toolchain's arm64e (old ABI,
+# capabilities 0x0) was what crashed Settings, not this code.
 BUNDLE_NAME = ADPrefs
-ADPrefs_FILES         = prefs/empty.m
+ADPrefs_FILES         = prefs/ADPrefsController.xm
 ADPrefs_INSTALL_PATH  = /Library/PreferenceBundles
-ADPrefs_FRAMEWORKS    = Foundation
-ADPrefs_CFLAGS        = -Wno-error
+ADPrefs_FRAMEWORKS    = UIKit Foundation CoreFoundation
+ADPrefs_CFLAGS        = -fobjc-arc -Wno-error -Wno-unused-variable -Wno-unused-function
 ADPrefs_RESOURCE_DIRS = prefs/Resources
 
 include $(THEOS_MAKE_PATH)/bundle.mk

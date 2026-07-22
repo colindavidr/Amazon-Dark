@@ -1,5 +1,13 @@
 name: Build AmazonDark (rootless .deb)
 
+# Built on macOS, NOT ubuntu. The Linux Theos toolchain stamps arm64e with the
+# OLD ABI (capabilities 0x0) and warns "incompatible arm64e ABI compiler" on
+# every build. iOS 17 rejects that: the tweak dylib survived only because the
+# Amazon app is an arm64 process and loads the good slice, but the preference
+# bundle is loaded into arm64e Settings and faulted SIGBUS on its first call
+# into Preferences.framework -- five different implementations, one cause.
+# CarBridgeReborn's prefs bundle works on this device and builds on macos-14
+# with Apple's clang, which emits capabilities 0x80. This mirrors it.
 on:
   push:
     branches: [ main, master, stable ]
@@ -10,42 +18,51 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # Cache Theos + SDKs keyed on their upstream HEADs, so a warm run skips the
-      # multi-hundred-MB download. Invalidates automatically when theos/sdks move.
-      - name: Compute Theos cache key
+      - name: Install Theos
         run: |
-          echo "upstream_heads=$(git ls-remote https://github.com/theos/theos | head -n1 | cut -f1)-$(git ls-remote https://github.com/theos/sdks | head -n1 | cut -f1)" >> "$GITHUB_ENV"
+          export THEOS=$HOME/theos
+          git clone --quiet --recursive https://github.com/theos/theos.git "$THEOS"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
 
-      - name: Cache Theos
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/theos
-          key: ${{ runner.os }}-theos-${{ env.upstream_heads }}
+      - name: Install ldid
+        run: brew install ldid
 
-      # Installs Theos + the Linux iOS toolchain + SDKs and exports $THEOS.
-      # Pinned to a release tag rather than @main.
-      - name: Set up Theos
-        uses: Randomblock1/theos-action@v1
+      - name: Install patched iOS 16.5 SDK
+        run: |
+          git clone -n --depth=1 --filter=tree:0 https://github.com/theos/sdks.git /tmp/sdks
+          cd /tmp/sdks
+          git sparse-checkout set --no-cone "iPhoneOS16.5.sdk"
+          git checkout --quiet
+          mkdir -p "$THEOS/sdks"
+          cp -R /tmp/sdks/iPhoneOS16.5.sdk "$THEOS/sdks/"
+          ls "$THEOS/sdks"
 
-      - name: Lint Logos %orig usage + header linkage
+      - name: Lint Logos %orig usage
         run: bash scripts/lint-logos.sh
 
       - name: Build rootless package
-        env:
-          THEOS_PACKAGE_SCHEME: rootless
         run: |
-          rm -f packages/*.deb || true
           make clean || true
-          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          make THEOS_PACKAGE_SCHEME=rootless package FINALPACKAGE=1
           echo "---- built packages ----"
           ls -l packages/
+
+      - name: Verify arm64e ABI is 0x80 (the whole reason we build on macOS)
+        run: |
+          for BIN in $(find .theos -name ADPrefs -path "*bundle*" -o -name "AmazonDark.dylib" | head -2); do
+            echo "== $BIN"
+            lipo -detailed_info "$BIN" | grep -A4 "architecture arm64e" || true
+            CAP=$(lipo -detailed_info "$BIN" | awk '/architecture arm64e/{f=1} f&&/capabilities/{print $2; exit}')
+            echo "arm64e capabilities = $CAP"
+            if [ "$CAP" != "0x80" ]; then echo "::warning::$BIN arm64e capabilities is $CAP, expected 0x80"; fi
+          done
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4

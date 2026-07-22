@@ -1,10 +1,15 @@
-{
-    CFBundleDevelopmentRegion = English;
-    CFBundleExecutable = ADPrefs;
-    CFBundleIdentifier = "com.colindavidr.amazondark.prefs";
-    CFBundleInfoDictionaryVersion = "6.0";
-    CFBundleName = AmazonDark;
-    CFBundlePackageType = BNDL;
-    CFBundleVersion = "5.65.0";
-    NSPrincipalClass = PLCustomListController;
-}
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>ADPrefs</string>
+    <key>CFBundleIdentifier</key><string>com.colindavidr.amazondark.prefs</string>
+    <key>CFBundleName</key><string>ADPrefs</string>
+    <key>CFBundlePackageType</key><string>BNDL</string>
+    <key>CFBundleShortVersionString</key><string>5.66.0</string>
+    <key>CFBundleVersion</key><string>5.66.0</string>
+    <key>MinimumOSVersion</key><string>13.0</string>
+    <key>NSPrincipalClass</key><string>ADRootListController</string>
+</dict>
+</plist>
