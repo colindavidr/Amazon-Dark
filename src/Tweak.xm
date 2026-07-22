@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.32.0"
+#define AD_VERSION "v5.34.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -279,8 +279,7 @@ static NSString *ADFixesLiteral(void){
         : @"";
     return [NSString stringWithFormat:
             @"{css:'"
-             "img:not([class*=heart]):not([class*=wish]):not([class*=lists-framework]),"
-             "picture,video,canvas,svg{filter:none !important;opacity:1 !important;"
+             "img,picture,video,canvas,svg{filter:none !important;opacity:1 !important;"
              "mix-blend-mode:normal !important;isolation:auto !important;}"
              "%@"
              "[style*=\\\"background-image\\\"]{filter:none !important;}"
@@ -289,7 +288,9 @@ static NSString *ADFixesLiteral(void){
              // documentStart so there is never a white flash. (The earlier
              // brightness(0)+invert whitened the ENTIRE element -- circle and heart
              // together -- which is exactly what created the blob.) The glyph itself is
-             // lightened by the JS pass below.
+             // NOT touched any more: the artwork Amazon ships is already light -- on
+             // device the heart rendered white first and went black only when our
+             // invert caught up with it -- so the only job here is the disc.
              "[class*=heart],[class*=lists-framework],[class*=wish]"
              "{background-color:#181a1b !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
@@ -481,20 +482,21 @@ static NSString *ADDarkReaderBootstrap(void){
                "while(pe&&pd++<3){var pl=lum(getComputedStyle(pe).backgroundColor);"
                  "if(pl!==null&&pl>0.5){pe.style.setProperty('background-color',BG,'important');break;}"
                  "pe=pe.parentElement;}"
-               // glyph: mask -> its background-color IS the fill; img/bgimg -> invert;
-               // svg/plain -> fill/color. Never brightness(0), which flattens the box.
+               // glyph: mask -> its background-color IS the fill; svg/plain ->
+               // fill/color. img/bgimg -> HANDS OFF. Every invert variant failed the
+               // same way because the premise was wrong: the artwork Amazon ships is
+               // already LIGHT. The on-device sequence was white heart at first paint,
+               // black heart the moment this pass caught up -- the invert itself was
+               // the blackener. So the image is left exactly as Amazon drew it, and
+               // any filter a previous pass set is actively REMOVED so a stale invert
+               // cannot linger for the rest of the session.
                "var hrc=he.getBoundingClientRect();"
                "var isGlyph=(hrc.width>0&&hrc.width<=28&&hrc.height>0&&hrc.height<=28);"
                "var hmi=hcs.webkitMaskImage||hcs.maskImage;"
                "if(hmi&&hmi!=='none'&&isGlyph){he.style.setProperty('background-color',FG,'important');}"
                "else if(hmi&&hmi!=='none'){he.style.setProperty('background-color',BG,'important');}"
-               // Invert ONLY at glyph size. An <img> holding the disc as well as the
-               // heart comes back light if flipped, which was the grey box; the 28px
-               // cap keeps that to the 24px heart and leaves the 32px disc dark.
-               "else if(isGlyph&&(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none'))){"
-                 "he.style.setProperty('filter','invert(1)','important');}"
                "else if(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none')){"
-                 "he.style.setProperty('background-color',BG,'important');}"
+                 "he.style.removeProperty('filter');}"
                "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
                  "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
              "}}catch(e){}"
@@ -563,23 +565,34 @@ static NSString *ADDarkReaderBootstrap(void){
                    "+'@'+Math.round(hr.width)+'x'+Math.round(hr.height)"
                    "+'/f:'+(hcs.fill||'-')+'/c:'+hcs.color);}}catch(e){}"
              // Full subtree of the first heart container, so we stop inferring which
-             // node draws the glyph. flt= reveals whether our invert actually applied.
+             // node draws the glyph. Widened after the 10-node cap cut the walk off
+             // exactly where the glyph should live (the children of the 32x32
+             // lists-framework span were nodes 11+): 24 nodes, ::after as well as
+             // ::before, pseudo paint sources, and the tail of any <img> src, which
+             // names the artwork outright.
              "var htree='';try{var HB=document.querySelector('[class*=heart],[class*=wish],[class*=lists-framework]');"
                "if(HB){var top=HB,up=0;"
                  "while(top.parentElement&&up++<3){var pp2=top.parentElement;"
                    "var pr3=pp2.getBoundingClientRect();if(pr3.width>48||pr3.height>48)break;top=pp2;}"
                  "var stk=[top],hd=[],gd=0;"
-                 "while(stk.length&&hd.length<10&&gd++<200){var nd=stk.shift();"
+                 "var pc2=function(p){return !!(p&&p.content&&p.content!=='none'&&p.content!=='normal');};"
+                 "var pi2=function(p){return !!(p&&p.backgroundImage&&p.backgroundImage!=='none');};"
+                 "var pm2=function(p){return !!(p&&((p.webkitMaskImage||p.maskImage||'none')!=='none'));};"
+                 "while(stk.length&&hd.length<24&&gd++<300){var nd=stk.shift();"
                    "var ncs=getComputedStyle(nd),nrr=nd.getBoundingClientRect();"
-                   "var nbb=getComputedStyle(nd,'::before');"
+                   "var nbb=getComputedStyle(nd,'::before'),naa=getComputedStyle(nd,'::after');"
                    "var cn3=nd.className;if(cn3&&cn3.baseVal!==undefined)cn3=cn3.baseVal;"
+                   "var sr2='';if(nd.tagName.toLowerCase()==='img'){"
+                     "sr2=(nd.currentSrc||nd.src||'').split('?')[0];sr2='|src='+(sr2?sr2.slice(-26):'-');}"
                    "hd.push(nd.tagName.toLowerCase()+'.'+String(cn3||'').split(' ')[0].slice(0,18)"
                      "+'@'+Math.round(nrr.width)+'x'+Math.round(nrr.height)"
                      "+'|bg='+ncs.backgroundColor.replace(/ /g,'')"
                      "+'|bgi='+(ncs.backgroundImage==='none'?'-':'Y')"
                      "+'|mask='+(((ncs.webkitMaskImage||ncs.maskImage||'none')==='none')?'-':'Y')"
-                     "+'|bef='+((nbb&&nbb.content&&nbb.content!=='none'&&nbb.content!=='normal')?'Y':'-')"
-                     "+'|flt='+ncs.filter);"
+                     "+'|bef='+(pc2(nbb)?'Y':'-')+'|aft='+(pc2(naa)?'Y':'-')"
+                     "+'|pbgi='+(((pi2(nbb)?'b':'')+(pi2(naa)?'a':''))||'-')"
+                     "+'|pmsk='+(((pm2(nbb)?'b':'')+(pm2(naa)?'a':''))||'-')"
+                     "+'|flt='+ncs.filter+sr2);"
                    "for(var ci2=0;ci2<nd.children.length;ci2++)stk.push(nd.children[ci2]);}"
                  "htree=' HEARTTREE='+hd.join(' ~ ');}"
              "}catch(e){}"
@@ -1141,7 +1154,14 @@ static inline BOOL ADIsTaggedIndicator(UIView *v){
     return v && objc_getAssociatedObject(v, kADIndicatorKey) != nil;
 }
 static inline void ADTagIndicator(UIView *v){
-    if (v) objc_setAssociatedObject(v, kADIndicatorKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!v) return;
+    objc_setAssociatedObject(v, kADIndicatorKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // The tag must ALSO live on the layer. UIView.backgroundColor forwards to
+    // layer.backgroundColor as a raw CGColor, which cannot carry the own-colour
+    // marker -- so the CALayer hook had no way to recognise the indicator and
+    // re-darkened the white one call after the sweep set it (the tabline probe
+    // read bg=0.10 at the start of every sweep for exactly this reason).
+    @try { objc_setAssociatedObject(v.layer, kADIndicatorKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); } @catch(...) {}
 }
 static void ADRememberBarSelection(UIView *root, BOOL selected){
     if (!root) return;
@@ -1493,6 +1513,14 @@ static NSAttributedString *ADRecolorAttributedString(NSAttributedString *in){
     }
     @try {
         if (ADLayerIsWebKitOwned(self)) {
+            %orig;
+            return;
+        }
+        // Claimed tab-bar elements (selection indicator, top hairline). Their view
+        // sets a marked-own white, but the marker cannot survive the UIColor ->
+        // CGColor forwarding, so without this check the hook mapped the white
+        // straight back to the dark background colour.
+        if (objc_getAssociatedObject(self, kADIndicatorKey)) {
             %orig;
             return;
         }
@@ -2272,8 +2300,10 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
         }
         if (tabBarish){
             const char *scn = object_getClassName(v);
-            if (scn && strstr(scn, "BarBackgroundShadow"))
+            if (scn && strstr(scn, "BarBackgroundShadow")){
+                ADTagIndicator(v);   // claim it, or the CALayer hook re-darkens the white
                 ((UIView *)v).backgroundColor = ADBarWhite();   // whiten the top hairline
+            }
             // Selection indicator: the short bar above the active symbol. It was being
             // logged but never recoloured, so it stayed the app's dark grey. Width is
             // what separates it from the full-width hairline -- the indicator spans one
