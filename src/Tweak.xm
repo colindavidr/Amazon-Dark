@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.35.0"
+#define AD_VERSION "v5.36.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -293,7 +293,8 @@ static NSString *ADFixesLiteral(void){
              // Scoped to glyph nodes only; the -position container stays out, so the
              // disc keeps the dark background the rule below gives it.
              "[class*=heart-placeholder],.lists-framework-unfilled,"
-             "[class*=heart] img,[class*=wish] img,[class*=lists-framework] img"
+             "[class*=heart] img,[class*=wish] img,[class*=lists-framework] img,"
+             "[class*=heart] svg,[class*=wish] svg,[class*=lists-framework] svg"
              "{filter:brightness(0) invert(1) !important;}"
              // Heart circle. The button behind the heart is a light/white disc; on a
              // dark theme it reads as a bright blob that hides the glyph. Darken it at
@@ -456,7 +457,8 @@ static NSString *ADDarkReaderBootstrap(void){
                  "try{var sr3=el.getBoundingClientRect();"
                    "var sc3=el.className;if(sc3&&sc3.baseVal!==undefined)sc3=sc3.baseVal;sc3=(sc3||'').toString();"
                    "var slim=ICON.test(sc3)?44:40;"
-                   "if(sr3.width>5&&sr3.width<=slim&&sr3.height>5&&sr3.height<=slim&&!SKIP.test(sc3)){"
+                   "var SK2=/star|prime|logo|flag|swatch|thumb|sponsor|pill-image|product-image|photo/i;"
+                   "if(sr3.width>5&&sr3.width<=slim&&sr3.height>5&&sr3.height<=slim&&!SK2.test(sc3)){"
                      "el.style.setProperty('filter','brightness(0) invert(1)','important');el.__adGlyph=1;gfix++;}"
                  "}catch(e){}}"
                "var fl2=lum(cs.fill),sl=lum(cs.stroke);"
