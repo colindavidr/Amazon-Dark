@@ -4,11 +4,14 @@ include $(THEOS)/makefiles/common.mk
 
 BUNDLE_NAME = ADPrefs
 
-ADPrefs_FILES     = ADRootListController.m
+# CarBridgeReborn pattern: NO Preferences framework linkage. The old
+# ADPrefs_PRIVATE_FRAMEWORKS = Preferences is what made the bundle unloadable
+# in Settings on this jailbreak (dyld failure = instant Settings crash).
+# Everything Preferences-related resolves at runtime inside the .xm.
+ADPrefs_FILES     = ADPrefsController.xm
 ADPrefs_INSTALL_PATH = /Library/PreferenceBundles
-ADPrefs_FRAMEWORKS   = UIKit
-ADPrefs_PRIVATE_FRAMEWORKS = Preferences
-ADPrefs_CFLAGS       = -fobjc-arc -Wno-error
+ADPrefs_FRAMEWORKS   = UIKit Foundation CoreFoundation
+ADPrefs_CFLAGS       = -fobjc-arc -Wno-error -Wno-unused-variable -Wno-unused-function
 
 include $(THEOS_MAKE_PATH)/bundle.mk
 

@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.52.0"
+#define AD_VERSION "v5.53.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -321,6 +321,19 @@ static NSString *ADFixesLiteral(void){
              // before it applies.
              "[class*=heart-placeholder]"
              "{filter:invert(1) hue-rotate(180deg) !important;}"
+             // Home shortcut strips (Haul / Prime Video / Grocery...): brand
+             // artwork sits on LIGHT pills, where the dark image backdrop reads
+             // as a black box. Brand imgs keep a clean slate.
+             "img[alt*=\\\"Whole Foods\\\"],img[alt*=Prime],img[alt*=prime],img[alt*=Fresh],"
+             "img[alt*=Haul],img[alt*=haul],img[alt*=Grocer],img[alt*=Luxury],img[alt*=Pharmac]"
+             "{background-color:transparent !important;filter:none !important;}"
+             // ISSUE 2: the read-more fade on long reviews is a white gradient
+             // overlay; on the dark theme it reads as a white smear. Remove the
+             // paint wholesale -- the expander still works, the text just ends.
+             "[class*=expander] [class*=fade],[class*=fade-out],"
+             "[class*=a-expander-partial]::before,[class*=a-expander-partial]::after,"
+             "[class*=expander-content]::before,[class*=expander-content]::after"
+             "{background:none !important;background-image:none !important;}"
 
              // Heart circle. The button behind the heart is a light/white disc; on a
              // dark theme it reads as a bright blob that hides the glyph. Darken it at
@@ -498,7 +511,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              // decorative dark gradients are left alone.
              "if(lfix<300){var gbi=cs.backgroundImage||'';"
                "if(gbi.indexOf('gradient')>=0){var g2=el.getBoundingClientRect();"
-                 "if(g2.width>120&&g2.height>60){var gmx=0,gm,gre=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/g;"
+                 "if(g2.width>120&&g2.height>28){var gmx=0,gm,gre=/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/g;"
                    "while((gm=gre.exec(gbi))){var gl2=0.2126*ch(+gm[1])+0.7152*ch(+gm[2])+0.0722*ch(+gm[3]);"
                      "if(gl2>gmx)gmx=gl2;}"
                    "if(gmx>0.55){el.style.setProperty('background-image','none','important');"
@@ -524,12 +537,16 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "var ot=false;for(var z=0;z<el.childNodes.length;z++){var nz=el.childNodes[z];"
                  "if(nz.nodeType===3&&nz.nodeValue&&nz.nodeValue.trim()){ot=true;break;}}"
                "var lim=ICON.test(cn2)?40:36;"
-               "if(gr.width>5&&gr.width<=lim&&gr.height>5&&gr.height<=lim&&!SKIP.test(cn2)&&!ot){"
+               "if(gr.width>5&&gr.width<=lim&&gr.height>5&&gr.height<=lim&&!SKIP.test(cn2)&&!ot&&bgOf(el)<=0.5){"
                  "var isI=el.tagName.toLowerCase()==='img';"
                  "var hasB=cs.backgroundImage&&cs.backgroundImage!=='none';"
                  "if(isI||hasB){el.style.setProperty('filter','brightness(0) invert(1)','important');"
                    "el.__adGlyph=1;gfix++;}}"
              "}catch(e){}}"
+             "if(el.tagName&&el.tagName.toLowerCase()==='img'&&lfix<300){"
+               "var pw2=el.getBoundingClientRect();"
+               "if(pw2.width>10&&pw2.width<=220&&bgOf(el.parentElement||el)>0.5){"
+                 "el.style.setProperty('background-color','transparent','important');}}"
              "if(BAD[cs.mixBlendMode]&&bfix<800){"
                "el.style.setProperty('mix-blend-mode','normal','important');"
                "el.style.setProperty('isolation','auto','important');bfix++;}"
@@ -546,7 +563,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                    "var sc3=el.className;if(sc3&&sc3.baseVal!==undefined)sc3=sc3.baseVal;sc3=(sc3||'').toString();"
                    "var slim=ICON.test(sc3)?44:40;"
                    "var SK2=/star|prime|logo|flag|swatch|thumb|sponsor|pill-image|product-image|photo/i;"
-                   "if(sr3.width>5&&sr3.width<=slim&&sr3.height>5&&sr3.height<=slim&&!SK2.test(sc3)){"
+                   "if(sr3.width>5&&sr3.width<=slim&&sr3.height>5&&sr3.height<=slim&&!SK2.test(sc3)&&bgOf(el)<=0.5){"
                      "el.style.setProperty('filter','brightness(0) invert(1)','important');el.__adGlyph=1;gfix++;}"
                  "}catch(e){}}"
                "var fl2=lum(cs.fill),sl=lum(cs.stroke);"
