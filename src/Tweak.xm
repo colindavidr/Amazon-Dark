@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.49.0"
+#define AD_VERSION "v5.50.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -381,7 +381,8 @@ static NSString *ADThemeLiteral(void){
 // HEAVY: full Dark Reader UMD + first enable(). Injected ONCE per document at
 // documentStart via a WKUserScript. The 346KB engine is parsed a single time per page.
 static NSString *ADDarkReaderBootstrap(void){
-    if (gADBootCache) return gADBootCache;
+    NSString *cached = gADBootCache;      // local strong ref: safe vs invalidation
+    if (cached) return cached;
     NSString *dr = ADBundledDarkReaderJS();
     if (!dr.length) return nil;
     gADBootCache = [NSString stringWithFormat:
@@ -1294,6 +1295,7 @@ static const void *kADRNFiltersKey = &kADRNFiltersKey;
 static const void *kADRNCheckKey   = &kADRNCheckKey;
 static BOOL ADBackdropIsDark(UIView *v);
 static void ADLaunchWhiteGuard(UIView *v);
+static void ADInvertRNSVGApply(UIView *v);
 static inline BOOL ADIsTaggedIndicator(UIView *v){
     return v && objc_getAssociatedObject(v, kADIndicatorKey) != nil;
 }
@@ -2570,16 +2572,20 @@ static void ADInvertRNSVG(UIView *v){
             // cost bounded while late-drawn contents still get a look.
             if (w >= 6 && h >= 6 && v.layer.contents != nil && ADBackdropIsDark(v)){
                 NSNumber *att = objc_getAssociatedObject(v, kADRNCheckKey);
-                if (att.intValue < 4){
+                if (att.intValue < 4 && !objc_getAssociatedObject(v, kADRNInvertKey)){
                     objc_setAssociatedObject(v, kADRNCheckKey, @(att.intValue + 1),
                                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                    @try {
+                    // NOT here: this code path runs inside layoutSubviews, and
+                    // rendering a view mid-layout is reentrant UIKit. Decide on
+                    // the next turn, where snapshotting is legal.
+                    dispatch_async(dispatch_get_main_queue(), ^{ @try {
+                        if (objc_getAssociatedObject(v, kADRNInvertKey)) return;
                         UIGraphicsBeginImageContextWithOptions(v.bounds.size, NO, 1);
                         [v drawViewHierarchyInRect:v.bounds afterScreenUpdates:NO];
                         UIImage *im = UIGraphicsGetImageFromCurrentImageContext();
                         UIGraphicsEndImageContext();
-                        if (im && ADIsDarkGlyph(im)) take = YES;
-                    } @catch(...) {}
+                        if (im && ADIsDarkGlyph(im)) ADInvertRNSVGApply(v);
+                    } @catch(...) {} });
                 }
             }
         }
@@ -2588,6 +2594,11 @@ static void ADInvertRNSVG(UIView *v){
         // mounted view, which is why every icon reverted to black after visiting
         // the dots menu. If our filters are gone, put them back.
         if (objc_getAssociatedObject(v, kADRNInvertKey) && v.layer.filters.count) return;
+        ADInvertRNSVGApply(v);
+    } @catch(...) {}
+}
+static void ADInvertRNSVGApply(UIView *v){
+    @try {
         Class F = NSClassFromString(@"CAFilter");
         if (!F) return;
         id inv = [F filterWithType:@"colorInvert"];
@@ -2598,7 +2609,9 @@ static void ADInvertRNSVG(UIView *v){
         v.layer.filters = ours;
         objc_setAssociatedObject(v, kADRNFiltersKey, ours, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(v, kADRNInvertKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (gRNLogLeft > 0){ gRNLogLeft--; ADLog(@"rnsvg inverted cls=%s %.0fx%.0f", cn, w, h); }
+        if (gRNLogLeft > 0){ gRNLogLeft--;
+            ADLog(@"rnsvg inverted cls=%s %.0fx%.0f", object_getClassName(v),
+                  v.bounds.size.width, v.bounds.size.height); }
     } @catch(...) {}
 }
 
