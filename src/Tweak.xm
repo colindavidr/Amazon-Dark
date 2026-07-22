@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.39.0"
+#define AD_VERSION "v5.40.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -309,6 +309,14 @@ static NSString *ADFixesLiteral(void){
              "[class*=heart]:not(img):not([class*=heart-placeholder]),"
              "[class*=lists-framework]:not(img):not([class*=unfill]),"
              "[class*=wish]:not(img)"
+             "{background-color:#181a1b !important;}"
+             // The changeover / section shells inside the heart widget carry no
+             // heart-ish substring, so only Dark Reader's ASYNC pass darkened
+             // them -- that gap is the white box seen for the first frames.
+             // documentStart is before first paint; these cannot flash now.
+             "[class*=heart] [class*=changeover],[class*=lists-framework] [class*=changeover],"
+             "[class*=heart-position] div:not([class]),"
+             "[class*=heart] [class*=a-section],[class*=lists-framework] [class*=a-section]"
              "{background-color:#181a1b !important;}"
              // Glyph carriers must stay transparent or the silhouette filter
              // inverts their fill into a light box. Placed AFTER the disc rule so
@@ -2342,6 +2350,39 @@ static BOOL ADIsTabBarItemish(UIView *v){
     return (strstr(n,"BottomNav") || strstr(n,"TabBarItem") ||
             strstr(n,"TabBar") || strstr(n,"NavToolbar"));
 }
+// ─── React Native SVG icons (the Alexa panel) ────────────────────────────────────
+// The GLYPH probe named the Alexa panel's dark icons: RNSVGSvgView -- react-native-
+// svg painting vector paths straight into layer contents. No UIImageView hook, no
+// web pass, no tint can reach that artwork. A Core Animation colour filter can:
+// colorInvert flips the dark strokes light, hueRotate(pi) restores hue for any
+// coloured artwork caught in the net -- the same invert+hue-rotate recipe Dark
+// Reader uses for images, applied at the layer. Private CAFilter is resolved at
+// runtime and every call is guarded, so a missing class is a silent no-op.
+@interface CAFilter : NSObject
++ (id)filterWithType:(NSString *)type;
+@end
+static const void *kADRNInvertKey = &kADRNInvertKey;
+static int gRNLogLeft = 6;
+static void ADInvertRNSVG(UIView *v){
+    @try {
+        const char *cn = object_getClassName(v);
+        if (!cn || strncmp(cn, "RNSVG", 5) != 0) return;
+        if (strcmp(cn, "RNSVGSvgView") != 0) return;      // root only; children ride along
+        CGFloat w = v.bounds.size.width, h = v.bounds.size.height;
+        if (w < 6 || w > 48 || h < 6 || h > 48) return;   // icons, not illustrations
+        if (objc_getAssociatedObject(v, kADRNInvertKey)) return;
+        Class F = NSClassFromString(@"CAFilter");
+        if (!F) return;
+        id inv = [F filterWithType:@"colorInvert"];
+        if (!inv) return;
+        id hue = [F filterWithType:@"hueRotate"];
+        @try { [hue setValue:@(M_PI) forKey:@"inputAngle"]; } @catch(...) { hue = nil; }
+        v.layer.filters = hue ? @[inv, hue] : @[inv];
+        objc_setAssociatedObject(v, kADRNInvertKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (gRNLogLeft > 0){ gRNLogLeft--; ADLog(@"rnsvg inverted %.0fx%.0f", w, h); }
+    } @catch(...) {}
+}
+
 static int gTabDumpLeft = 16;   // one-shot budget, refreshed on each app launch
 static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
 static int gSwLabelFixed = 0, gSwTemplateSeen = 0, gSwTintFixed = 0;
@@ -2351,6 +2392,7 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
     if (!v || depth > 60) return;
     @try {
         if (ADIsWebKitOwned(v)) return;                 // Dark Reader's territory
+        ADInvertRNSVG(v);                               // Alexa panel vector icons
         // Was `return`, which skipped this view AND everything under it -- including
         // the background fill. That is where the grey boxes behind the nav tabs came
         // from: an unthemed light fill sitting exactly where we refused to look, and
