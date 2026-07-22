@@ -21,13 +21,19 @@ before-all::
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
-# NO preference-bundle subproject any more (v5.56.0).
-# The pane is now a plist-only bundle staged straight from layout/ with NO
-# executable. Three separate crash-report-driven attempts at a compiled
-# PSListController subclass all took Settings down with them; a bundle that
-# contains no code of ours cannot. Settings loads its own PSListController and
-# reads our Root.plist -- the toggle writes to the same defaults domain the
-# tweak reads, so nothing else changes.
+# Preference bundle, built the CarBridgeReborn way: declared in THIS makefile
+# alongside the tweak (not as a SUBPROJECTS aggregate) with RESOURCE_DIRS, and
+# with no private-framework linkage. v5.56.0's executable-free bundle could not
+# load at all -- Settings requires an executable -- so the compiled controller
+# is back, mirroring the structure that works on this device.
+BUNDLE_NAME = ADPrefs
+ADPrefs_FILES         = prefs/ADPrefsController.xm
+ADPrefs_INSTALL_PATH  = /Library/PreferenceBundles
+ADPrefs_FRAMEWORKS    = UIKit Foundation CoreFoundation
+ADPrefs_CFLAGS        = -fobjc-arc -Wno-error -Wno-unused-variable -Wno-unused-function
+ADPrefs_RESOURCE_DIRS = prefs/Resources
+
+include $(THEOS_MAKE_PATH)/bundle.mk
 
 after-package::
 	@ls -1t packages/*.deb 2>/dev/null | head -1 | xargs -I{} echo "package ready: {}"

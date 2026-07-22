@@ -1,19 +1,18 @@
 /*
- * AmazonDark — Settings pane, rebuilt on the CarBridgeReborn pattern.
+ * AmazonDark — Settings pane, mirroring CarBridgeReborn's proven structure.
  *
- * The previous pane linked Preferences.framework at compile time
- * (ADPrefs_PRIVATE_FRAMEWORKS = Preferences) and subclassed PSListController
- * statically. On this jailbreak that made the bundle unloadable inside
- * Settings — dyld failed resolving the private framework and Settings died
- * the moment the pane was opened. CarBridgeReborn's pane works because it
- * links NOTHING private: interfaces declared locally, every class resolved
- * at runtime with %c(), controller created as a Logos %subclass registered
- * in %ctor when Settings loads the bundle.
+ * History that shaped this file: three earlier designs took Settings down.
+ * v5.53/54 died inside -[PSListController loadSpecifiersFromPlistName:] (per
+ * crash report), v5.55 died inside a hand-rolled specifier builder (per
+ * AD_prefs_live.txt, which stopped after "specifiers called"), and v5.56's
+ * executable-free bundle could not load at all ("executable couldn't be
+ * located"). CBR runs fine on this exact device, so this follows it closely:
+ * no private-framework linkage, runtime class lookups, %subclass registered
+ * in %ctor, plist load with a manual fallback, and the Respring action on a
+ * navigation bar button rather than a PSButtonCell action.
  *
- * Scope deliberately minimal per request: an Enabled switch and a Respring
- * button. Values are written BOTH to CFPreferences (the suite the tweak
- * merges) and to the /var/jb plist the tweak reads directly, then the
- * Darwin notification nudges a running Amazon.
+ * Every step logs. If this still faults, the last line in the log names the
+ * exact call that did it.
  */
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
@@ -23,28 +22,26 @@
 #include <unistd.h>
 #include <string.h>
 
-// Plain syscall logging (CBR pattern): safe at ctor time, and it tells us
-// whether the bundle loads at all when the pane still misbehaves.
 static void ADPLog(const char *m){
     int fd = open("/var/mobile/AD_prefs_live.txt", O_WRONLY|O_CREAT|O_APPEND, 0644);
     if (fd >= 0){ write(fd, m, strlen(m)); write(fd, "\n", 1); close(fd); }
 }
 
-#define AD_DOMAIN   @"com.colindavidr.amazondark"
-#define AD_JB_PLIST @"/var/jb/var/mobile/Library/Preferences/com.colindavidr.amazondark.plist"
-#define AD_BUNDLE   @"/var/jb/Library/PreferenceBundles/ADPrefs.bundle"
+#define AD_DOMAIN    @"com.colindavidr.amazondark"
+#define AD_JB_PLIST  @"/var/jb/var/mobile/Library/Preferences/com.colindavidr.amazondark.plist"
+#define BUNDLE_PATH  @"/var/jb/Library/PreferenceBundles/ADPrefs.bundle"
+#define AD_SWITCHCELL 6
 
 @interface PSSpecifier : NSObject
 + (id)groupSpecifierWithName:(NSString *)name;
 + (id)preferenceSpecifierNamed:(NSString *)name target:(id)target set:(SEL)set get:(SEL)get detail:(Class)detail cell:(NSInteger)cell edit:(Class)edit;
 - (void)setProperty:(id)value forKey:(NSString *)key;
 - (id)propertyForKey:(NSString *)key;
-- (void)setButtonAction:(SEL)action;
 @end
 
 @interface PSListController : UIViewController
+- (id)specifiers;
 - (NSArray *)loadSpecifiersFromPlistName:(NSString *)plistName target:(id)target;
-- (NSBundle *)bundle;
 @end
 
 @interface SBSRelaunchAction : NSObject
@@ -63,9 +60,8 @@ static void ADWriteBoth(NSString *key, id value){
         CFPreferencesAppSynchronize((__bridge CFStringRef)AD_DOMAIN);
     } @catch (NSException *e) {}
     @try {
-        NSMutableDictionary *d =
-            [NSMutableDictionary dictionaryWithContentsOfFile:AD_JB_PLIST]
-            ?: [NSMutableDictionary dictionary];
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:AD_JB_PLIST]
+                                 ?: [NSMutableDictionary dictionary];
         d[key] = value;
         [d writeToFile:AD_JB_PLIST atomically:YES];
     } @catch (NSException *e) {}
@@ -78,8 +74,6 @@ static void ADWriteBoth(NSString *key, id value){
 %subclass ADRootListController : PSListController
 
 - (id)navigationTitle { return @"AmazonDark"; }
-
-// bundle override removed with the plist loader (v5.55.0)
 
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
     @try {
@@ -103,75 +97,82 @@ static void ADWriteBoth(NSString *key, id value){
     } @catch (NSException *e) {}
 }
 
-- (id)specifiers {
-    ADPLog("[prefs] specifiers called (manual build)");
-    // NEVER call loadSpecifiersFromPlistName:. The crash report is explicit:
-    // objc_msgSend faulted INSIDE -[PSListController loadSpecifiersFromPlistName:
-    // target:] on a garbage receiver, with our frame directly above it. Apple's
-    // plist loader is what dies, so the plist path is abandoned entirely --
-    // three rows are trivial to build directly, and every object here is one we
-    // created ourselves.
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    // Respring lives on a nav-bar button (CBR's approach) instead of a
+    // PSButtonCell action -- one less specifier mechanism in the crash path.
     @try {
-        NSMutableArray *out = [NSMutableArray array];
-
-        PSSpecifier *grp = [%c(PSSpecifier) groupSpecifierWithName:@"AmazonDark"];
-        @try { [grp setProperty:@"True dark mode for the Amazon app. Toggle, then respring; the theme applies on the next Amazon launch."
-                         forKey:@"footerText"]; } @catch (NSException *e) {}
-        [out addObject:grp];
-
-        PSSpecifier *sw = [%c(PSSpecifier) preferenceSpecifierNamed:@"Enabled"
-                              target:self
-                                 set:@selector(setPreferenceValue:specifier:)
-                                 get:@selector(readPreferenceValue:)
-                              detail:nil cell:6 edit:nil];      // 6 = PSSwitchCell
-        [sw setProperty:@"enabled" forKey:@"key"];
-        [sw setProperty:AD_DOMAIN  forKey:@"defaults"];
-        [sw setProperty:@YES       forKey:@"default"];
-        [out addObject:sw];
-
-        PSSpecifier *bt = [%c(PSSpecifier) preferenceSpecifierNamed:@"Respring"
-                              target:self set:NULL get:NULL
-                              detail:nil cell:13 edit:nil];     // 13 = PSButtonCell
-        @try { [bt setButtonAction:@selector(adRespring)]; } @catch (NSException *e) {}
-        [out addObject:bt];
-
-        Ivar iv = class_getInstanceVariable(%c(PSListController), "_specifiers");
-        if (iv) object_setIvar(self, iv, out);
-        objc_setAssociatedObject(self, "adSpecs", out, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ADPLog("[prefs] specifiers built OK");
-        return out;
-    } @catch (NSException *e) {
-        ADPLog("[prefs] EXCEPTION building specifiers");
-        return @[];
-    }
+        UIViewController *vc = (UIViewController *)self;
+        if (!vc.navigationItem.rightBarButtonItem){
+            vc.navigationItem.rightBarButtonItem =
+                [[UIBarButtonItem alloc] initWithTitle:@"Respring"
+                                                 style:UIBarButtonItemStyleDone
+                                                target:self
+                                                action:@selector(adRespringTapped)];
+        }
+    } @catch (NSException *e) {}
 }
 
 %new
-- (void)adRespring {
+- (void)adRespringTapped {
+    ADPLog("[prefs] respring tapped");
     @try {
-        NSUInteger opts = (1 << 2);   // fade-to-black respring
         SBSRelaunchAction *a = [%c(SBSRelaunchAction) actionWithReason:@"AmazonDark"
-                                                               options:opts targetURL:nil];
+                                                               options:(1 << 2) targetURL:nil];
         [[%c(FBSSystemService) sharedService] sendActions:[NSSet setWithObject:a] withResult:nil];
     } @catch (NSException *e) {}
+}
+
+- (id)specifiers {
+    ADPLog("[prefs] specifiers: enter");
+    NSArray *specs = nil;
+    @try {
+        specs = [(PSListController *)self loadSpecifiersFromPlistName:@"Root" target:self];
+        ADPLog(specs.count ? "[prefs] specifiers: plist load OK" : "[prefs] specifiers: plist load EMPTY");
+    } @catch (NSException *e) {
+        ADPLog("[prefs] specifiers: plist load EXCEPTION");
+        specs = nil;
+    }
+    if (!specs.count){
+        @try {
+            ADPLog("[prefs] specifiers: manual group");
+            NSMutableArray *out = [NSMutableArray array];
+            [out addObject:[%c(PSSpecifier) groupSpecifierWithName:@"AmazonDark"]];
+            ADPLog("[prefs] specifiers: manual switch");
+            PSSpecifier *sw = [%c(PSSpecifier) preferenceSpecifierNamed:@"Enabled"
+                                  target:self
+                                     set:@selector(setPreferenceValue:specifier:)
+                                     get:@selector(readPreferenceValue:)
+                                  detail:nil cell:AD_SWITCHCELL edit:nil];
+            [sw setProperty:@"enabled" forKey:@"key"];
+            [sw setProperty:AD_DOMAIN  forKey:@"defaults"];
+            [sw setProperty:@YES       forKey:@"default"];
+            [out addObject:sw];
+            specs = out;
+            ADPLog("[prefs] specifiers: manual built");
+        } @catch (NSException *e) {
+            ADPLog("[prefs] specifiers: manual EXCEPTION");
+            specs = @[];
+        }
+    }
+    @try {
+        Ivar iv = class_getInstanceVariable(%c(PSListController), "_specifiers");
+        ADPLog(iv ? "[prefs] specifiers: ivar found" : "[prefs] specifiers: ivar MISSING");
+        if (iv) object_setIvar(self, iv, specs);
+        objc_setAssociatedObject(self, "adSpecs", specs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } @catch (NSException *e) { ADPLog("[prefs] specifiers: ivar EXCEPTION"); }
+    ADPLog("[prefs] specifiers: returning");
+    return specs;
 }
 
 %end
 
 %ctor {
     ADPLog("[prefs] ctor entered");
-    // THE CRASH: %subclass needs PSListController to EXIST when %init runs.
-    // PreferenceLoader can load this bundle before Preferences.framework is in
-    // memory -- then the subclass is never created, NSPrincipalClass resolves
-    // to nil, and Settings dies the moment the pane is opened. Force the
-    // framework in first. Both rootless and rootful paths tried.
-    if (!objc_getClass("PSListController")){
+    if (!objc_getClass("PSListController"))
         dlopen("/System/Library/PrivateFrameworks/Preferences.framework/Preferences", RTLD_LAZY);
-        ADPLog("[prefs] dlopen Preferences attempted");
-    }
     ADPLog(objc_getClass("PSListController") ? "[prefs] PSListController FOUND"
                                             : "[prefs] PSListController MISSING");
     %init;
-    ADPLog(objc_getClass("ADRootListController") ? "[prefs] subclass registered OK"
-                                                 : "[prefs] subclass MISSING after init");
+    ADPLog(objc_getClass("ADRootListController") ? "[prefs] subclass OK" : "[prefs] subclass MISSING");
 }
