@@ -18,6 +18,17 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+
+// Plain syscall logging (CBR pattern): safe at ctor time, and it tells us
+// whether the bundle loads at all when the pane still misbehaves.
+static void ADPLog(const char *m){
+    int fd = open("/var/mobile/AD_prefs_live.txt", O_WRONLY|O_CREAT|O_APPEND, 0644);
+    if (fd >= 0){ write(fd, m, strlen(m)); write(fd, "\n", 1); close(fd); }
+}
 
 #define AD_DOMAIN   @"com.colindavidr.amazondark"
 #define AD_JB_PLIST @"/var/jb/var/mobile/Library/Preferences/com.colindavidr.amazondark.plist"
@@ -97,6 +108,7 @@ static void ADWriteBoth(NSString *key, id value){
 }
 
 - (id)specifiers {
+    ADPLog("[prefs] specifiers called");
     @try {
         NSArray *specs = [(PSListController *)self loadSpecifiersFromPlistName:@"Root" target:self];
         if (specs.count){
@@ -142,4 +154,20 @@ static void ADWriteBoth(NSString *key, id value){
 
 %end
 
-%ctor { %init; }
+%ctor {
+    ADPLog("[prefs] ctor entered");
+    // THE CRASH: %subclass needs PSListController to EXIST when %init runs.
+    // PreferenceLoader can load this bundle before Preferences.framework is in
+    // memory -- then the subclass is never created, NSPrincipalClass resolves
+    // to nil, and Settings dies the moment the pane is opened. Force the
+    // framework in first. Both rootless and rootful paths tried.
+    if (!objc_getClass("PSListController")){
+        dlopen("/System/Library/PrivateFrameworks/Preferences.framework/Preferences", RTLD_LAZY);
+        ADPLog("[prefs] dlopen Preferences attempted");
+    }
+    ADPLog(objc_getClass("PSListController") ? "[prefs] PSListController FOUND"
+                                            : "[prefs] PSListController MISSING");
+    %init;
+    ADPLog(objc_getClass("ADRootListController") ? "[prefs] subclass registered OK"
+                                                 : "[prefs] subclass MISSING after init");
+}

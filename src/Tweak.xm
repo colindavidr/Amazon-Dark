@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.53.0"
+#define AD_VERSION "v5.54.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -330,10 +330,17 @@ static NSString *ADFixesLiteral(void){
              // ISSUE 2: the read-more fade on long reviews is a white gradient
              // overlay; on the dark theme it reads as a white smear. Remove the
              // paint wholesale -- the expander still works, the text just ends.
-             "[class*=expander] [class*=fade],[class*=fade-out],"
+             "[class*=expander] [class*=fade],[class*=fade-out],[class*=gradient],"
              "[class*=a-expander-partial]::before,[class*=a-expander-partial]::after,"
-             "[class*=expander-content]::before,[class*=expander-content]::after"
-             "{background:none !important;background-image:none !important;}"
+             "[class*=expander-content]::before,[class*=expander-content]::after,"
+             "[class*=a-expander-partial-collapse-container]::after,"
+             "[class*=a-expander-partial-collapse-container]::before,"
+             "[data-hook*=review] [class*=expander]::after,"
+             "[data-hook*=review] [class*=expander]::before,"
+             "[class*=cr-] [class*=expander]::after,[class*=cr-] [class*=expander]::before,"
+             "[class*=review] [class*=expander]::after,[class*=review] [class*=expander]::before"
+             "{background:none !important;background-image:none !important;"
+             "content:none !important;display:none !important;}"
 
              // Heart circle. The button behind the heart is a light/white disc; on a
              // dark theme it reads as a bright blob that hides the glyph. Darken it at
@@ -607,6 +614,21 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "var fl=lum(cs.color);if(fl===null)continue;"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
+           // READ-MORE SCRIM. CSS alone has now missed this twice, so do it by
+           // mechanism: inside any review/expander subtree, an element painting a
+           // gradient is the fade -- Amazon uses no decorative gradients there.
+           // Bounded scan so a long review page cannot turn this into a hot loop.
+           "try{var FDR=document.querySelectorAll("
+             "'[class*=expander],[class*=review],[data-hook*=review],[class*=cr-]');"
+             "var fdone=0;"
+             "for(var f1=0;f1<FDR.length&&f1<40&&fdone<60;f1++){"
+               "var fkids=FDR[f1].querySelectorAll('*');"
+               "for(var f2=0;f2<fkids.length&&f2<300&&fdone<60;f2++){var fx=fkids[f2];"
+                 "var fbi=getComputedStyle(fx).backgroundImage||'';"
+                 "if(fbi.indexOf('gradient')>=0){"
+                   "fx.style.setProperty('background-image','none','important');"
+                   "fx.style.setProperty('background','none','important');fdone++;}}}"
+           "}catch(e){}"
            // HEARTS. Two parts, kept separate so they cannot fight: darken the circle
            // (a light background on the element or a near ancestor) and lighten the
            // glyph by whatever actually draws it. Doing this by mechanism avoids the
@@ -730,7 +752,22 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                    "for(var ci2=0;ci2<nd.children.length;ci2++)stk.push(nd.children[ci2]);}"
                  "htree=' HEARTTREE='+hd.join(' ~ ');}"
              "}catch(e){}"
+             "var fd=[];try{var FQ=document.querySelectorAll("
+               "'[class*=expander] *,[data-hook*=review] *,[class*=cr-] *');"
+               "for(var y2=0;y2<FQ.length&&y2<600&&fd.length<4;y2++){var fe2=FQ[y2];"
+                 "var c2=getComputedStyle(fe2),b2=c2.backgroundImage||'';"
+                 "var pa2=getComputedStyle(fe2,'::after'),pb2=getComputedStyle(fe2,'::before');"
+                 "var pab=(pa2&&pa2.backgroundImage!=='none')?pa2.backgroundImage:"
+                   "((pb2&&pb2.backgroundImage!=='none')?pb2.backgroundImage:'');"
+                 "var src2=(b2.indexOf('gradient')>=0)?b2:((pab.indexOf('gradient')>=0)?('PSEUDO:'+pab):'');"
+                 "if(!src2)continue;"
+                 "var r2=fe2.getBoundingClientRect();"
+                 "var cn4=fe2.className;if(cn4&&cn4.baseVal!==undefined)cn4=cn4.baseVal;"
+                 "fd.push(fe2.tagName.toLowerCase()+'.'+String(cn4||'').split(' ')[0].slice(0,22)"
+                   "+'@'+Math.round(r2.width)+'x'+Math.round(r2.height)+'|'+src2.slice(0,46));}"
+             "}catch(e){}"
              "pr=' url='+String(location.pathname||'').slice(0,28)"
+               "+(fd.length?(' FADE='+fd.join(' ~ ')):' FADE=none')"
                "+(window.__AD_EARLY__?(' EARLY='+window.__AD_EARLY__):'')"
                "+(acc.length?(' probe='+acc.join(' ')):' probe=none')"
                "+(lt.length?(' light='+lt.join(' ')):'')"
