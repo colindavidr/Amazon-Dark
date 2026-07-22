@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.68.0"
+#define AD_VERSION "v5.70.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -2731,6 +2731,64 @@ static void ADInvertRNSVGApply(UIView *v){
     } @catch(...) {}
 }
 
+// ─── status bar: beat subclass overrides ────────────────────────────────────
+static NSMutableDictionary *gSBOrig = nil;      // class name -> original IMP
+static int gSBLogLeft = 8;
+static UIStatusBarStyle ADSBStyleImp(id self, SEL _cmd){
+    if (gP.enabled) return UIStatusBarStyleLightContent;
+    @try {
+        Class c = object_getClass(self);
+        while (c){
+            NSValue *v = gSBOrig[NSStringFromClass(c)];
+            if (v){
+                UIStatusBarStyle (*fn)(id, SEL) = (UIStatusBarStyle (*)(id, SEL))[v pointerValue];
+                if (fn) return fn(self, _cmd);
+            }
+            c = class_getSuperclass(c);
+        }
+    } @catch(...) {}
+    return UIStatusBarStyleDefault;
+}
+// Walk from this VC's class up to UIViewController; the first class that
+// implements preferredStatusBarStyle directly is the one deciding, so that is
+// the one to replace. Runs once per class, then never again.
+static NSMutableSet *gSBSeen = nil;
+static void ADClaimStatusBarFor(Class c){
+    @try {
+        SEL sel = @selector(preferredStatusBarStyle);
+        Class base = [UIViewController class];
+        if (!gSBOrig) gSBOrig = [NSMutableDictionary dictionary];
+        if (!gSBSeen) gSBSeen = [NSMutableSet set];
+        // Examined once per class: copying a method list on every appearance is
+        // exactly the kind of per-screen cost that shows up as scroll lag.
+        if (!c) return;
+        NSString *seenKey = NSStringFromClass(c);
+        if ([gSBSeen containsObject:seenKey]) return;
+        [gSBSeen addObject:seenKey];
+        while (c && c != base){
+            unsigned int n = 0;
+            Method *ms = class_copyMethodList(c, &n);
+            BOOL here = NO;
+            for (unsigned i = 0; i < n; i++){
+                if (method_getName(ms[i]) != sel) continue;
+                here = YES;
+                NSString *key = NSStringFromClass(c);
+                if (!gSBOrig[key]){
+                    IMP orig = method_getImplementation(ms[i]);
+                    gSBOrig[key] = [NSValue valueWithPointer:orig];
+                    method_setImplementation(ms[i], (IMP)ADSBStyleImp);
+                    if (gSBLogLeft > 0){ gSBLogLeft--;
+                        ADLog(@"statusbar: claimed %s", class_getName(c)); }
+                }
+                break;
+            }
+            free(ms);
+            if (here) break;
+            c = class_getSuperclass(c);
+        }
+    } @catch(...) {}
+}
+
 static int gTabDumpLeft = 16;   // one-shot budget, refreshed on each app launch
 static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
 static int gSwLabelFixed = 0, gSwTemplateSeen = 0, gSwTintFixed = 0;
@@ -3206,7 +3264,18 @@ static void ADReapplyBurst(void){
                 ADLog(@"screen: %@", vcKey);
             }
             gProbeArmed = YES;
-            @try { if (gP.enabled) [self setNeedsStatusBarAppearanceUpdate]; } @catch(...) {}
+            @try {
+                if (gP.enabled){
+                    ADClaimStatusBarFor(object_getClass(self));
+                    // Children decide as often as containers do on RN screens.
+                    for (UIViewController *ch in self.childViewControllers)
+                        ADClaimStatusBarFor(object_getClass(ch));
+                    if (gSBLogLeft > 0){ gSBLogLeft--;
+                        ADLog(@"statusbar: vc=%s appStyle=%ld",
+                              object_getClassName(self),
+                              (long)[UIApplication sharedApplication].statusBarStyle); }
+                }
+            } @catch(...) {}
             ADReapplyBurst();
             // Probe after the burst has settled, so we only report genuine hold-outs.
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 900*1000000LL),
@@ -3218,27 +3287,20 @@ static void ADReapplyBurst(void){
     if (gP.enabled) return UIStatusBarStyleLightContent;
     return %orig;
 }
-// Containers hand the decision to a child (nav stacks, tab bars, RN hosts).
-// Returning nil keeps the decision on the container itself, where the override
-// above applies -- so a child that wants dark content cannot win.
-- (UIViewController *)childViewControllerForStatusBarStyle {
-    if (gP.enabled) return nil;
-    return %orig;
-}
 %end
 
 // React Native's StatusBar module sets the style through the legacy
 // UIApplication API, which never consults any view controller. Force it light.
 %hook UIApplication
 - (void)setStatusBarStyle:(UIStatusBarStyle)style {
-    if (gP.enabled){
+    if (gP.enabled && style != UIStatusBarStyleLightContent){
         %orig(UIStatusBarStyleLightContent);
         return;
     }
     %orig;
 }
 - (void)setStatusBarStyle:(UIStatusBarStyle)style animated:(BOOL)animated {
-    if (gP.enabled){
+    if (gP.enabled && style != UIStatusBarStyleLightContent){
         %orig(UIStatusBarStyleLightContent, animated);
         return;
     }
