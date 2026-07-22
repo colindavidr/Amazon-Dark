@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.34.0"
+#define AD_VERSION "v5.35.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -283,6 +283,18 @@ static NSString *ADFixesLiteral(void){
              "mix-blend-mode:normal !important;isolation:auto !important;}"
              "%@"
              "[style*=\\\"background-image\\\"]{filter:none !important;}"
+             // THE FIX THAT ACTUALLY WORKED, brought back. v5.27.0 whitened the heart
+             // with a documentStart CSS rule and it visibly worked; v5.28.0 removed it
+             // because [class*=heart-position] dragged the 32px disc into the whitening
+             // (the white blob). Every JS attempt since lost a timing race CSS cannot
+             // lose: a stylesheet applies to nodes Amazon re-renders later, an inline
+             // style dies with the node it was set on. And brightness(0) invert(1) is
+             // polarity-proof -- dark or light artwork both end up a white silhouette.
+             // Scoped to glyph nodes only; the -position container stays out, so the
+             // disc keeps the dark background the rule below gives it.
+             "[class*=heart-placeholder],.lists-framework-unfilled,"
+             "[class*=heart] img,[class*=wish] img,[class*=lists-framework] img"
+             "{filter:brightness(0) invert(1) !important;}"
              // Heart circle. The button behind the heart is a light/white disc; on a
              // dark theme it reads as a bright blob that hides the glyph. Darken it at
              // documentStart so there is never a white flash. (The earlier
@@ -291,7 +303,9 @@ static NSString *ADFixesLiteral(void){
              // NOT touched any more: the artwork Amazon ships is already light -- on
              // device the heart rendered white first and went black only when our
              // invert caught up with it -- so the only job here is the disc.
-             "[class*=heart],[class*=lists-framework],[class*=wish]"
+             "[class*=heart]:not(img):not([class*=heart-placeholder]),"
+             "[class*=lists-framework]:not(img):not([class*=unfilled]),"
+             "[class*=wish]:not(img)"
              "{background-color:#181a1b !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
@@ -409,7 +423,7 @@ static NSString *ADDarkReaderBootstrap(void){
              // which cannot work here: these come from m.media-amazon.com and would
              // taint a canvas. Inline !important outranks stylesheet !important, so
              // this wins over our own img{filter:none}.
-             "if(gfix<80&&!el.__adGlyph){try{var gr=el.getBoundingClientRect();"
+             "if(gfix<160&&!el.__adGlyph){try{var gr=el.getBoundingClientRect();"
                "var cn2=el.className;if(cn2&&cn2.baseVal!==undefined)cn2=cn2.baseVal;"
                "cn2=(cn2||'').toString();"
                // textContent was the wrong test. Amazon's standard icon markup nests a
@@ -420,7 +434,7 @@ static NSString *ADDarkReaderBootstrap(void){
                // element's OWN direct text nodes should disqualify it.
                "var ot=false;for(var z=0;z<el.childNodes.length;z++){var nz=el.childNodes[z];"
                  "if(nz.nodeType===3&&nz.nodeValue&&nz.nodeValue.trim()){ot=true;break;}}"
-               "var lim=ICON.test(cn2)?40:32;"
+               "var lim=ICON.test(cn2)?40:36;"
                "if(gr.width>5&&gr.width<=lim&&gr.height>5&&gr.height<=lim&&!SKIP.test(cn2)&&!ot){"
                  "var isI=el.tagName.toLowerCase()==='img';"
                  "var hasB=cs.backgroundImage&&cs.backgroundImage!=='none';"
@@ -438,6 +452,13 @@ static NSString *ADDarkReaderBootstrap(void){
              // correctly. Only dark fills are redirected, so multi-colour artwork and
              // brand marks keep their palette.
              "if(el.namespaceURI==='http://www.w3.org/2000/svg'){"
+               "if(el.tagName.toLowerCase()==='svg'&&gfix<160&&!el.__adGlyph){"
+                 "try{var sr3=el.getBoundingClientRect();"
+                   "var sc3=el.className;if(sc3&&sc3.baseVal!==undefined)sc3=sc3.baseVal;sc3=(sc3||'').toString();"
+                   "var slim=ICON.test(sc3)?44:40;"
+                   "if(sr3.width>5&&sr3.width<=slim&&sr3.height>5&&sr3.height<=slim&&!SKIP.test(sc3)){"
+                     "el.style.setProperty('filter','brightness(0) invert(1)','important');el.__adGlyph=1;gfix++;}"
+                 "}catch(e){}}"
                "var fl2=lum(cs.fill),sl=lum(cs.stroke);"
                "if(fl2!==null&&fl2<0.22){el.style.setProperty('fill',FG,'important');n++;}"
                "if(sl!==null&&sl<0.22){el.style.setProperty('stroke',FG,'important');n++;}"
@@ -452,7 +473,7 @@ static NSString *ADDarkReaderBootstrap(void){
                "if(!c||c==='none'||c==='normal')return false;return c.length>2;}"
              "try{var pb=getComputedStyle(el,'::before'),pa=getComputedStyle(el,'::after');"
                "if((hasC(pb)||hasC(pa))&&n<400){var pcl=lum(cs.color);"
-                 "if(pcl!==null&&pcl<0.30){el.style.setProperty('color',FG,'important');n++;}}"
+                 "if(pcl!==null&&pcl<0.50){el.style.setProperty('color',FG,'important');n++;}}"
              "}catch(e){}"
              // MASK-IMAGE ICONS. The mask is the shape; the visible colour is the
              // element's background-color. Dark Reader treats that as a background and
@@ -461,6 +482,15 @@ static NSString *ADDarkReaderBootstrap(void){
              "try{var mi=cs.webkitMaskImage||cs.maskImage;"
                "if(mi&&mi!=='none'&&n<400){var mbl=lum(cs.backgroundColor);"
                  "if(mbl!==null&&mbl<0.55){el.style.setProperty('background-color',FG,'important');n++;}}"
+             "}catch(e){}"
+             "try{if(n<400){var g3=el.getBoundingClientRect();"
+               "if(g3.width>5&&g3.width<=40&&g3.height>5&&g3.height<=40){"
+                 "var bw2=parseFloat(cs.borderTopWidth)||parseFloat(cs.borderLeftWidth)||0;"
+                 "if(bw2>=1.5){var bcl=lum(cs.borderTopColor||cs.borderLeftColor);"
+                   "if(bcl!==null&&bcl<0.35){var ot2=false;"
+                     "for(var z2=0;z2<el.childNodes.length;z2++){var nz2=el.childNodes[z2];"
+                       "if(nz2.nodeType===3&&nz2.nodeValue&&nz2.nodeValue.trim()){ot2=true;break;}}"
+                     "if(!ot2){el.style.setProperty('border-color',FG,'important');n++;}}}}}"
              "}catch(e){}"
              "if(n>=400)continue;"
              "var t=false;"
@@ -482,21 +512,15 @@ static NSString *ADDarkReaderBootstrap(void){
                "while(pe&&pd++<3){var pl=lum(getComputedStyle(pe).backgroundColor);"
                  "if(pl!==null&&pl>0.5){pe.style.setProperty('background-color',BG,'important');break;}"
                  "pe=pe.parentElement;}"
-               // glyph: mask -> its background-color IS the fill; svg/plain ->
-               // fill/color. img/bgimg -> HANDS OFF. Every invert variant failed the
-               // same way because the premise was wrong: the artwork Amazon ships is
-               // already LIGHT. The on-device sequence was white heart at first paint,
-               // black heart the moment this pass caught up -- the invert itself was
-               // the blackener. So the image is left exactly as Amazon drew it, and
-               // any filter a previous pass set is actively REMOVED so a stale invert
-               // cannot linger for the rest of the session.
+               // glyph: img/bgimg is handled by the documentStart CSS silhouette
+               // rule (the v5.27.0 approach that demonstrably worked) -- CSS survives
+               // Amazon re-rendering the node, inline styles do not, which is where
+               // every JS-era attempt actually died. Here: masks, then fill/color.
                "var hrc=he.getBoundingClientRect();"
                "var isGlyph=(hrc.width>0&&hrc.width<=28&&hrc.height>0&&hrc.height<=28);"
                "var hmi=hcs.webkitMaskImage||hcs.maskImage;"
                "if(hmi&&hmi!=='none'&&isGlyph){he.style.setProperty('background-color',FG,'important');}"
                "else if(hmi&&hmi!=='none'){he.style.setProperty('background-color',BG,'important');}"
-               "else if(he.tagName.toLowerCase()==='img'||(hcs.backgroundImage&&hcs.backgroundImage!=='none')){"
-                 "he.style.removeProperty('filter');}"
                "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
                  "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
              "}}catch(e){}"
