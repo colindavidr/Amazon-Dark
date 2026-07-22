@@ -1,0 +1,34 @@
+#!/bin/sh
+# AmazonDark control — replaces the Settings pane.
+#
+# The preference bundle was abandoned after five rewrites: on this jailbreak
+# its binary faults (SIGBUS) at whatever call it reaches first inside
+# Settings, regardless of implementation. A shell script has no binary to
+# validate, so it cannot fail that way.
+PLIST=/var/jb/var/mobile/Library/Preferences/com.colindavidr.amazondark.plist
+[ -d /var/jb ] || PLIST=/var/mobile/Library/Preferences/com.colindavidr.amazondark.plist
+
+write_state() {
+    cat > "$PLIST" <<PEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>enabled</key><$1/></dict></plist>
+PEOF
+    chown mobile:mobile "$PLIST" 2>/dev/null
+    killall -9 Amazon 2>/dev/null
+}
+
+case "$1" in
+    on|enable|1)   write_state true;  echo "AmazonDark: ENABLED (Amazon closed — relaunch it)" ;;
+    off|disable|0) write_state false; echo "AmazonDark: DISABLED (Amazon closed — relaunch it)" ;;
+    status|"")
+        if [ -f "$PLIST" ] && grep -q "<false/>" "$PLIST" 2>/dev/null; then
+            echo "AmazonDark: disabled"
+        else
+            echo "AmazonDark: enabled"
+        fi
+        echo "plist: $PLIST"
+        ;;
+    respring) killall -9 SpringBoard 2>/dev/null ;;
+    *) echo "usage: amazondark [on|off|status|respring]" ; exit 1 ;;
+esac
