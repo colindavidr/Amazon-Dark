@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.36.0"
+#define AD_VERSION "v5.37.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -292,10 +292,13 @@ static NSString *ADFixesLiteral(void){
              // polarity-proof -- dark or light artwork both end up a white silhouette.
              // Scoped to glyph nodes only; the -position container stays out, so the
              // disc keeps the dark background the rule below gives it.
-             "[class*=heart-placeholder],.lists-framework-unfilled,"
+             "[class*=heart-placeholder],[class*=lists-framework-unfill],"
              "[class*=heart] img,[class*=wish] img,[class*=lists-framework] img,"
-             "[class*=heart] svg,[class*=wish] svg,[class*=lists-framework] svg"
+             "[class*=heart] svg,[class*=wish] svg,[class*=lists-framework] svg,"
+             "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon]"
              "{filter:brightness(0) invert(1) !important;}"
+             "[class*=lists-framework-unfill],[class*=heart-placeholder]"
+             "{background-color:transparent !important;}"
              // Heart circle. The button behind the heart is a light/white disc; on a
              // dark theme it reads as a bright blob that hides the glyph. Darken it at
              // documentStart so there is never a white flash. (The earlier
@@ -509,7 +512,9 @@ static NSString *ADDarkReaderBootstrap(void){
            "try{var HRT=document.querySelectorAll('[class*=heart],[class*=wish],[class*=lists-framework]');"
              "for(var hz=0;hz<HRT.length;hz++){var he=HRT[hz];var hcs=getComputedStyle(he);"
                // circle: darken this element's light bg, and the first light ancestor bg
-               "if(lum(hcs.backgroundColor)>0.5)he.style.setProperty('background-color',BG,'important');"
+               "var hcl2=he.className;if(hcl2&&hcl2.baseVal!==undefined)hcl2=hcl2.baseVal;hcl2=String(hcl2||'');"
+               "if(/unfill|placehold/i.test(hcl2)){he.style.removeProperty('background-color');}"
+               "else if(lum(hcs.backgroundColor)>0.5){he.style.setProperty('background-color',BG,'important');}"
                "var pe=he.parentElement,pd=0;"
                "while(pe&&pd++<3){var pl=lum(getComputedStyle(pe).backgroundColor);"
                  "if(pl!==null&&pl>0.5){pe.style.setProperty('background-color',BG,'important');break;}"
@@ -545,7 +550,7 @@ static NSString *ADDarkReaderBootstrap(void){
            // DOM as it stands right now.
            "var pr='';try{{"
              "var seen={},acc=[];"
-             "for(var q=0;q<els.length&&acc.length<8;q++){var pe=els[q];"
+             "for(var q=0;q<els.length&&acc.length<14;q++){var pe=els[q];"
                "var rc=pe.getBoundingClientRect();"
                "if(rc.width<6||rc.width>40||rc.height<6||rc.height>40)continue;"
                "if(pe.children.length>2)continue;"
@@ -1234,7 +1239,17 @@ static void ADTintBarIcon(UIImageView *iv, BOOL selected){
             [cur getRed:&cr green:&cg blue:&cb alpha:&ca] &&
             [want getRed:&wr green:&wg blue:&wb alpha:&wa] &&
             fabs(cr-wr) < 0.01 && fabs(cg-wg) < 0.01 && fabs(cb-wb) < 0.01;
-        if (!same) ((UIView *)iv).tintColor = want;
+        if (!same){
+            // Snap, don't fade. This write lands inside whatever animation context
+            // Amazon's tab transition has open, so UIKit eased the colour change
+            // over the transition's duration -- the slow blue-to-white. Disabling
+            // implicit actions for this one assignment makes it take on the next
+            // frame instead.
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            [UIView performWithoutAnimation:^{ ((UIView *)iv).tintColor = want; }];
+            [CATransaction commit];
+        }
     } @catch(...) {}
 }
 static BOOL gBarFixPending = NO;
