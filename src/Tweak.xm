@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.107.0"
+#define AD_VERSION "v5.108.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -820,8 +820,9 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "for(var mi=0;mi<CM2.length&&mi<40;mi++){var mc=CM2[mi];"
                "var mcs=getComputedStyle(mc),mr=mc.getBoundingClientRect();"
                "if(mr.width<20||mr.height<10)continue;"
+               "var mcl=mc.className;if(mcl&&mcl.baseVal!==undefined)mcl=mcl.baseVal;mcl=String(mcl||'');"
                "var mrad=parseFloat(mcs.borderTopLeftRadius)||0;"
-               "if(mrad>=Math.min(mr.width,mr.height)*0.4){"
+               "if(/on-image-button/i.test(mcl)||mrad>=Math.min(mr.width,mr.height)*0.4){"
                  "mc.style.setProperty('background-color',BG,'important');"
                  "mc.style.setProperty('background-image','none','important');"
                  "mc.style.setProperty('border-radius','0','important');"
