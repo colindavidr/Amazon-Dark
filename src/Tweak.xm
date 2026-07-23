@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.100.0"
+#define AD_VERSION "v5.101.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -739,7 +739,13 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                    "if(overImg)break;sib=sib.previousElementSibling;}"
                  "if(overImg||lum(pcs2.backgroundColor)!==null)break;"
                  "pe2=pe2.parentElement;}}catch(e){}"
-             "if(overImg){if(lum(cs.color)!==null&&lum(cs.color)>0.5)"
+             "if(overImg){"
+               "try{if(!window.__AD_PROMO__&&el.getBoundingClientRect().width>70){"
+                 "var pcn=el.className;if(pcn&&pcn.baseVal!==undefined)pcn=pcn.baseVal;"
+                 "var par=el.parentElement,pp='';if(par){var pc=par.className;if(pc&&pc.baseVal!==undefined)pc=pc.baseVal;pp=String(pc||'').split(' ')[0];}"
+                 "window.__AD_PROMO__=el.tagName.toLowerCase()+'.'+String(pcn||'').split(' ')[0].slice(0,34)"
+                   "+'^'+pp.slice(0,28)+'/'+cs.color;}}catch(e){}"
+               "if(lum(cs.color)!==null&&lum(cs.color)>0.5)"
                  "el.style.setProperty('color','#0f1111','important');continue;}"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
@@ -785,6 +791,9 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "var mrad=parseFloat(mcs.borderTopLeftRadius)||0;"
                "if(mrad>=Math.min(mr.width,mr.height)*0.4){"
                  "mc.style.setProperty('background-color',BG,'important');"
+                 "mc.style.setProperty('background-image','none','important');"
+                 "mc.style.setProperty('clip-path','inset(0 round 999px)','important');"
+                 "mc.style.setProperty('overflow','hidden','important');"
                  "mc.style.setProperty('border','1.5px solid rgba(255,255,255,0.6)','important');"
                  "mc.style.setProperty('box-sizing','border-box','important');"
                  "mc.style.setProperty('box-shadow','none','important');}"
@@ -938,6 +947,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                  "+dumpBtn(findBtn('[class*=heart],[class*=wish]'),'HRTBTN');"
              "}catch(e){}"
              "pr=' url='+String(location.pathname||'').slice(0,28)"
+               "+(window.__AD_PROMO__?(' PROMO='+window.__AD_PROMO__):'')"
                "+btree"
                "+(fd.length?(' FADE='+fd.join(' ~ ')):' FADE=none')"
                "+(window.__AD_EARLY__?(' EARLY='+window.__AD_EARLY__):'')"
