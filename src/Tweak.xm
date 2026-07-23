@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.89.0"
+#define AD_VERSION "v5.90.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -700,6 +700,14 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "if(nd.nodeType===3&&nd.nodeValue&&nd.nodeValue.trim()){t=true;break;}}"
              "if(!t)continue;"
              "var fl=lum(cs.color);if(fl===null)continue;"
+             // Over a background-image (promo/hero card) -> keep original colour.
+             // Walk up: a url() background before any solid colour means imagery.
+             "var overImg=false,pe2=el,pd2=0;"
+             "while(pe2&&pd2++<6){var pcs2=getComputedStyle(pe2);"
+               "if((pcs2.backgroundImage||'').indexOf('url(')>=0){overImg=true;break;}"
+               "if(lum(pcs2.backgroundColor)!==null)break;"
+               "pe2=pe2.parentElement;}"
+             "if(overImg)continue;"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
            // HEARTS. Two parts, kept separate so they cannot fight: darken the circle
@@ -762,6 +770,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "var pr=pos.getBoundingClientRect();if(pr.width<16||pr.width>60)continue;"
                "pos.style.setProperty('background-color',BG,'important');"
                "pos.style.setProperty('border-radius','50%','important');"
+               "pos.style.setProperty('overflow','hidden','important');"
                "pos.style.setProperty('border',BRD,'important');"
                "pos.style.setProperty('box-sizing','border-box','important');"
                "var kids=pos.querySelectorAll('*');"
