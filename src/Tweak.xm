@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.74.0"
+#define AD_VERSION "v5.75.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -2000,10 +2000,29 @@ static NSAttributedString *ADRecolorAttributedString(NSAttributedString *in){
 }
 %end
 
+static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar);
+static const void *kADScrollPendKey = &kADScrollPendKey;
 %hook UIScrollView
 - (void)didMoveToWindow {
     %orig;
     @try { if (ADRecolorOn() && self.window) self.indicatorStyle = UIScrollViewIndicatorStyleWhite; } @catch(...) {}
+}
+- (void)setContentOffset:(CGPoint)offset {
+    %orig;
+    @try {
+        if (!ADRecolorOn() || !self.window || ADIsWebKitOwned(self)) return;
+        // Coalesce: schedule ONE scoped sweep ~300ms after scrolling settles.
+        if (objc_getAssociatedObject(self, kADScrollPendKey)) return;
+        objc_setAssociatedObject(self, kADScrollPendKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __weak UIScrollView *ws = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 300*1000000LL),
+            dispatch_get_main_queue(), ^{
+                UIScrollView *ss = ws;
+                if (!ss) return;
+                objc_setAssociatedObject(ss, kADScrollPendKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                @try { if (ADRecolorOn() && ss.window) ADSweepViewTree(ss, 0, NO); } @catch(...) {}
+            });
+    } @catch(...) {}
 }
 %end
 
@@ -3284,8 +3303,8 @@ static void ADStartTimer(void){
 // coalesced burst (0 / 60 / 200 / 500 ms) covers the mount-to-first-paint window
 // without a standing cost.
 static void ADReapplyBurst(void){
-    static const int64_t delays_ms[] = {0, 60, 200, 500};
-    for (int i = 0; i < 4; i++){
+    static const int64_t delays_ms[] = {0, 60, 200, 500, 1000, 2000, 3500};
+    for (int i = 0; i < (int)(sizeof(delays_ms)/sizeof(delays_ms[0])); i++){
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delays_ms[i]*1000000LL),
             dispatch_get_main_queue(), ^{ @try {
                 ADForceWindowsDarkTrait();
