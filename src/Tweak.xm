@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.110.0"
+#define AD_VERSION "v5.111.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -796,8 +796,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
            // Clear stray dark square wrappers around the buttons (the box that
            // can extend past the pill). Shapes/borders are persistent CSS above.
            "try{var AIC=document.querySelectorAll('[class*=a-icon]');"
-             "for(var ai=0;ai<AIC.length&&ai<200;ai++){var ae=AIC[ai];"
-               "if(ae.__adGlyph)continue;"
+             "for(var ai=0;ai<AIC.length&&ai<500;ai++){var ae=AIC[ai];"
                "var acn=ae.className;if(acn&&acn.baseVal!==undefined)acn=acn.baseVal;acn=String(acn||'');"
                "if(/star|prime|logo|flag|swatch|thumb|sponsor|product|photo|-alt|toggle|switch|checkbox/i.test(acn))continue;"
                "var acs=getComputedStyle(ae),abi=acs.backgroundImage||acs.webkitMaskImage||acs.maskImage;"
@@ -931,8 +930,9 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                    "var cn3=nd.className;if(cn3&&cn3.baseVal!==undefined)cn3=cn3.baseVal;"
                    "var sr2='';if(nd.tagName.toLowerCase()==='img'){"
                      "sr2=(nd.currentSrc||nd.src||'').split('?')[0];sr2='|src='+(sr2?sr2.slice(-26):'-');}"
-                   "hd.push(nd.tagName.toLowerCase()+'.'+String(cn3||'').split(' ')[0].slice(0,18)"
+                   "hd.push(nd.tagName.toLowerCase()+'.'+String(cn3||'').split(' ')[0].slice(0,24)"
                      "+'@'+Math.round(nrr.width)+'x'+Math.round(nrr.height)"
+                     "+'|top'+Math.round(nrr.top-bt)"
                      "+'|bg='+ncs.backgroundColor.replace(/ /g,'')"
                      "+'|bgi='+(ncs.backgroundImage==='none'?'-':'Y')"
                      "+'|mask='+(((ncs.webkitMaskImage||ncs.maskImage||'none')==='none')?'-':'Y')"
@@ -964,7 +964,9 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                  "for(var z=0;z<q.length;z++){var rr=q[z].getBoundingClientRect();"
                    "if(rr.width>20&&rr.height>20)return q[z];}return null;};"
                "var dumpBtn=function(el,tag){if(!el)return '';var top=el,up=0;"
-                 "while(top.parentElement&&up++<6)top=top.parentElement;"
+                 "var bt=el.getBoundingClientRect().top;"
+                 "if(/ompare/i.test(tag)){top=el.parentElement||el;}"
+                 "else{while(top.parentElement&&up++<6)top=top.parentElement;}"
                  "var stk=[top],out=[],gd=0;"
                  "while(stk.length&&out.length<14&&gd++<120){var nd=stk.shift();"
                    "var cs=getComputedStyle(nd),rc=nd.getBoundingClientRect();"
