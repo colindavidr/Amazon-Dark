@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.113.0"
+#define AD_VERSION "v5.114.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -341,7 +341,8 @@ static NSString *ADFixesLiteral(void){
              "[class*=heart] img:not([class*=placehold]),[class*=wish] img:not([class*=placehold]),"
              "[class*=lists-framework] img:not([class*=placehold]),"
              "[class*=heart] svg,[class*=wish] svg,[class*=lists-framework] svg,"
-             "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon]"
+             "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon],"
+             "[class*=lists-framework-fill],[class*=heart-fill],[class*=heart] [class*=filled]"
              "{filter:brightness(0) invert(1) !important;}"
              // The white flash was OURS. puis-heart-placeholder is Amazon's
              // LIGHT-MODE loading artwork -- shown while the real sprite loads --
@@ -460,13 +461,21 @@ static NSString *ADFixesLiteral(void){
              "[class*=copilot-compare]::before,[class*=copilot-compare]::after"
              "{background:none !important;background-color:transparent !important;"
              "box-shadow:none !important;content:none !important;}"
+             "[class*=copilot-compare] *:not([class*=on-image-button]):not(img):not(svg)"
+             "{background-color:transparent !important;box-shadow:none !important;}"
+             "[class*=copilot-compare] [class*=on-image-button]"
+             "{background-color:#181a1b !important;border:1.5px solid rgba(255,255,255,0.6) !important;"
+             "border-radius:0 !important;box-sizing:border-box !important;overflow:hidden !important;"
+             "box-shadow:none !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
              // legible on first paint instead of after the repair catches up.
              "[style*=multiply],[style*=darken],[style*=color-burn],"
              "[class*=deal] [style*=blend],[class*=Deal] [style*=blend]"
              "{mix-blend-mode:normal !important;isolation:auto !important;}"
-             "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}",
+             "',invert:[],ignoreInlineStyle:['[class*=copilot-compare]','[class*=copilot-compare] *',"
+             "'[class*=heart]','[class*=heart] *','[class*=lists-framework]','[class*=lists-framework] *',"
+             "'[class*=wish]','[class*=wish] *'],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}",
             imgBackdrop];
 }
 
@@ -788,8 +797,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "var hrc=he.getBoundingClientRect();"
                "var isGlyph=(hrc.width>0&&hrc.width<=28&&hrc.height>0&&hrc.height<=28);"
                "var hmi=hcs.webkitMaskImage||hcs.maskImage;"
-               "if(hmi&&hmi!=='none'&&isGlyph){he.style.setProperty('background-color',FG,'important');}"
-               "else if(hmi&&hmi!=='none'){he.style.setProperty('background-color',BG,'important');}"
+               "if(hmi&&hmi!=='none'){if(!/action-button/i.test(hcl2))he.style.setProperty('background-color',FG,'important');}"
                "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
                  "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
              "}}catch(e){}"
@@ -891,6 +899,24 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                      "wb.style.setProperty('box-shadow','none','important');"
                      "wb.style.setProperty('border','0','important');}}"
                  "wb=wb.parentElement;}}"
+           "}catch(e){}"
+           "try{var XCB=document.querySelectorAll('[class*=copilot-compare]');"
+             "for(var xci=0;xci<XCB.length&&xci<40;xci++){var xb=XCB[xci];"
+               "var xcl=xb.className;if(xcl&&xcl.baseVal!==undefined)xcl=xcl.baseVal;xcl=String(xcl||'');"
+               "if(!/on-image-button/i.test(xcl))continue;"
+               "var xr=xb.getBoundingClientRect();if(xr.width<16)continue;"
+               "var anc=xb.parentElement,ad=0;"
+               "while(anc&&ad++<4){var kids=anc.children;"
+                 "for(var ki=0;ki<kids.length;ki++){var kd=kids[ki];"
+                   "if(kd===xb||kd.contains(xb))continue;"
+                   "var kr=kd.getBoundingClientRect();"
+                   "if(kr.right<=xr.left+1||kr.left>=xr.right-1)continue;"
+                   "if(kr.top>=xr.top-1&&kr.bottom<=xr.bottom+1)continue;"
+                   "var kbl=lum(getComputedStyle(kd).backgroundColor);"
+                   "if(kbl!==null&&kbl<0.4){kd.style.setProperty('background-color','transparent','important');"
+                     "kd.style.setProperty('box-shadow','none','important');"
+                     "kd.style.setProperty('border','0','important');}}"
+                 "anc=anc.parentElement;}}"
            "}catch(e){}"
            // One-shot probe. Two builds have now been spent inferring what paints
            // these glyphs from what does NOT move. Cheaper to just ask the DOM: report
