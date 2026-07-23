@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.73.0"
+#define AD_VERSION "v5.74.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -526,7 +526,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                // so anything Amazon builds inside one is unreachable from the document.
                "if(e.shadowRoot&&depth<4&&out.length<6000)collect(e.shadowRoot,out,depth+1);}"
              "}catch(e){}return out;}"
-           "var els=collect(document.body,[],0),n=0,bfix=0,lfix=0,gfix=0;"           // Read the themed background off <html> rather than plumbing another
+           "var els=collect(document.body,[],0),n=0,bfix=0,lfix=0,gfix=0,bigfix=0;"           // Read the themed background off <html> rather than plumbing another
            // format argument through two call sites.
            "var BG='rgb(24,26,27)';try{var hb=getComputedStyle(document.documentElement).backgroundColor;"
              "var hl=lum(hb);if(hl!==null&&hl<0.25)BG=hb;}catch(e){}"
@@ -559,6 +559,13 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              // before its children are contrast-checked against it.
              "if(lfix<500){var pl=lum(cs.backgroundColor);"
                "if(pl!==null&&pl>0.55){el.style.setProperty('background-color',BG,'important');lfix++;}}"
+             // LARGE light panels, uncapped. Section-sized light surfaces (the
+             // pharmacy pink wrapper, the light-blue insurance strip) are never
+             // content -- darken them even after the general cap is spent.
+             "if(bigfix<120){var plb=lum(cs.backgroundColor);"
+               "if(plb!==null&&plb>0.55){var rb=el.getBoundingClientRect();"
+                 "if(rb.width>=200&&rb.height>=80){"
+                   "el.style.setProperty('background-color',BG,'important');bigfix++;}}}"
              // LIGHT GRADIENTS. lfix read 0 on every line while a 430x627 light panel
              // sat on screen, because a gradient lives in background-IMAGE and is
              // invisible to a backgroundColor check. The probe named it:
@@ -839,7 +846,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "+(lt.length?(' light='+lt.join(' ')):'')"
                "+(ht.length?(' HEART='+ht.join(' ')):'')+htree;}"
            "}catch(e){pr=' probeERR';}"
-           "return n+'/'+bfix+'/'+lfix+'/'+gfix+pr;}catch(e){return -1;}};"
+           "return n+'/'+bfix+'/'+lfix+'/'+gfix+'/'+bigfix+pr;}catch(e){return -1;}};"
          "window.__AMZDARK_APPLY__=function(){try{"
            "if(!document.querySelector('style.darkreader'))DarkReader.enable(%@,%@);"
            "window.__AMZDARK_FIXCONTRAST__();"
