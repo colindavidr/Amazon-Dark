@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.70.0"
+#define AD_VERSION "v5.70.1"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -2732,16 +2732,17 @@ static void ADInvertRNSVGApply(UIView *v){
 }
 
 // ─── status bar: beat subclass overrides ────────────────────────────────────
-static NSMutableDictionary *gSBOrig = nil;      // class name -> original IMP
+static NSMutableDictionary *gSBOrig = nil;      // class name -> original IMP (as uintptr)
 static int gSBLogLeft = 8;
 static UIStatusBarStyle ADSBStyleImp(id self, SEL _cmd){
     if (gP.enabled) return UIStatusBarStyleLightContent;
     @try {
         Class c = object_getClass(self);
         while (c){
-            NSValue *v = gSBOrig[NSStringFromClass(c)];
+            NSNumber *v = gSBOrig[NSStringFromClass(c)];
             if (v){
-                UIStatusBarStyle (*fn)(id, SEL) = (UIStatusBarStyle (*)(id, SEL))[v pointerValue];
+                IMP orig = (IMP)(uintptr_t)[v unsignedLongLongValue];
+                UIStatusBarStyle (*fn)(id, SEL) = (UIStatusBarStyle (*)(id, SEL))orig;
                 if (fn) return fn(self, _cmd);
             }
             c = class_getSuperclass(c);
@@ -2775,7 +2776,7 @@ static void ADClaimStatusBarFor(Class c){
                 NSString *key = NSStringFromClass(c);
                 if (!gSBOrig[key]){
                     IMP orig = method_getImplementation(ms[i]);
-                    gSBOrig[key] = [NSValue valueWithPointer:orig];
+                    gSBOrig[key] = @((unsigned long long)(uintptr_t)orig);
                     method_setImplementation(ms[i], (IMP)ADSBStyleImp);
                     if (gSBLogLeft > 0){ gSBLogLeft--;
                         ADLog(@"statusbar: claimed %s", class_getName(c)); }
