@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.97.0"
+#define AD_VERSION "v5.98.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -450,6 +450,7 @@ static NSString *ADFixesLiteral(void){
              "[class*=copilot-compare]"
              "{background-color:#181a1b !important;clip-path:inset(0 round 999px) !important;"
              "box-sizing:border-box !important;"
+             "box-shadow:inset 0 0 0 1.5px rgba(255,255,255,0.6) !important;"
              "color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
              "[class*=copilot-compare] *"
              "{color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
@@ -757,8 +758,10 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "var hcl2=he.className;if(hcl2&&hcl2.baseVal!==undefined)hcl2=hcl2.baseVal;hcl2=String(hcl2||'');"
                "if(/action-button/i.test(hcl2)){"
                  "he.style.setProperty('background-color',BG,'important');"
-                 "he.style.setProperty('-webkit-mask-image','radial-gradient(circle,#000 0 49%,rgba(0,0,0,0) 50%)','important');"
-                 "he.style.setProperty('mask-image','radial-gradient(circle,#000 0 49%,rgba(0,0,0,0) 50%)','important');}"
+                 "he.style.setProperty('-webkit-mask-image','none','important');"
+                 "he.style.setProperty('mask-image','none','important');"
+                 "he.style.setProperty('border','1.5px solid rgba(255,255,255,0.6)','important');"
+                 "he.style.setProperty('box-sizing','border-box','important');}"
                "else if(/heart-position/i.test(hcl2)){he.style.setProperty('background-color','transparent','important');}"
                "else if(/unfill|placehold|a-icon/i.test(hcl2)){he.style.setProperty('background-color','transparent','important');}"
                "else if(lum(hcs.backgroundColor)>0.5){he.style.setProperty('background-color',BG,'important');}"
