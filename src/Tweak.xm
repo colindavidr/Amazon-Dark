@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.79.0"
+#define AD_VERSION "v5.80.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -928,12 +928,17 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                     // Engine absent (SMASH / store-mode webviews created off the
                     // path our documentStart userscript covers). Inject it now and
                     // re-apply shortly after so the page themes without a reload.
-                    if ([res isEqualToString:@"noDR"] &&
-                        !objc_getAssociatedObject(wv, kADBootedKey)){
-                        objc_setAssociatedObject(wv, kADBootedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                        ADBootstrapDarkReaderIn(wv);
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250*1000000LL),
-                            dispatch_get_main_queue(), ^{ @try { ADEnableDarkReaderIn(wv); } @catch(...) {} });
+                    if ([res isEqualToString:@"noDR"]){
+                        NSNumber *tries = objc_getAssociatedObject(wv, kADBootedKey);
+                        int tc = tries.intValue;
+                        if (tc < 20){   // bounded: an empty DOM on first sight means
+                                        // retry until the real content loads, then
+                                        // reapply stops returning noDR and this ends.
+                            objc_setAssociatedObject(wv, kADBootedKey, @(tc + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                            ADBootstrapDarkReaderIn(wv);
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250*1000000LL),
+                                dispatch_get_main_queue(), ^{ @try { ADEnableDarkReaderIn(wv); } @catch(...) {} });
+                        }
                     }
                     // 'n/bfix' = text colours lifted / blend modes neutralised.
                     // 'nofix'  = the repair function is not defined in this document.
@@ -1152,11 +1157,6 @@ static void ADWalkWebViews(UIView *v){
                 if (![seenWV containsObject:key]){
                     [seenWV addObject:key];
                     ADLog(@"WEBVIEW cls=%s url=%@", object_getClassName(wv), u);
-                    // Non-home webview: get the engine in right away.
-                    if ([u rangeOfString:@"mshop"].location == NSNotFound &&
-                        [u rangeOfString:@"cart"].location == NSNotFound){
-                        ADBootstrapDarkReaderIn(wv);
-                    }
                 }
             } @catch(...) {}
             ADEnableDarkReaderIn(wv);
@@ -2069,7 +2069,7 @@ static const void *kADScrollPendKey = &kADScrollPendKey;
                 UIScrollView *ss = ws;
                 if (!ss) return;
                 objc_setAssociatedObject(ss, kADScrollPendKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                @try { if (ADRecolorOn() && ss.window) ADSweepViewTree(ss, 0, NO); } @catch(...) {}
+                @try { if (ADRecolorOn() && ss.window){ ADSweepViewTree(ss, 0, NO); ADInjectAllWebViews(); } } @catch(...) {}
             });
     } @catch(...) {}
 }
