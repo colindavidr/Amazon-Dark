@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.105.0"
+#define AD_VERSION "v5.106.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -688,12 +688,12 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                    "var sc3=el.className;if(sc3&&sc3.baseVal!==undefined)sc3=sc3.baseVal;sc3=(sc3||'').toString();"
                    "var slim=ICON.test(sc3)?44:40;"
                    "var SK2=/star|prime|logo|flag|swatch|thumb|sponsor|pill-image|product-image|photo/i;"
-                   "if(sr3.width>5&&sr3.width<=slim&&sr3.height>5&&sr3.height<=slim&&!SK2.test(sc3)&&bgOf(el)<=0.5){"
+                   "if(sr3.width>5&&sr3.width<=slim&&sr3.height>5&&sr3.height<=slim&&!SK2.test(sc3)){"
                      "el.style.setProperty('filter','brightness(0) invert(1)','important');el.__adGlyph=1;gfix++;}"
                  "}catch(e){}}"
                "var fl2=lum(cs.fill),sl=lum(cs.stroke);"
-               "if(fl2!==null&&fl2<0.22){el.style.setProperty('fill',FG,'important');n++;}"
-               "if(sl!==null&&sl<0.22){el.style.setProperty('stroke',FG,'important');n++;}"
+               "if(fl2!==null&&fl2<0.45){el.style.setProperty('fill',FG,'important');n++;}"
+               "if(sl!==null&&sl<0.45){el.style.setProperty('stroke',FG,'important');n++;}"
              "}"
              // ICON FONTS / PSEUDO-ELEMENT GLYPHS. The text pass below requires a
              // literal child text node, and a ::before glyph has none - the character
