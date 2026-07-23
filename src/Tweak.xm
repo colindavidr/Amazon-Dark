@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.82.0"
+#define AD_VERSION "v5.83.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -412,7 +412,7 @@ static NSString *ADFixesLiteral(void){
              "[class*=heart] [class*=changeover],[class*=lists-framework] [class*=changeover],"
              "[class*=heart-position] div:not([class]),"
              "[class*=heart] [class*=a-section],[class*=lists-framework] [class*=a-section]"
-             "{background-color:transparent !important;}"
+             "{background-color:#181a1b !important;}"
              // Card skeletons. The light= probe names div.a-section@76x64 shells
              // that stay light through every pass -- they flash white where the
              // heart will be while the card hydrates. Empty shells carry no
@@ -702,28 +702,6 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "var fl=lum(cs.color);if(fl===null)continue;"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
-           // ROUND BUTTONS (heart disc, compare pill). Give the rounded element a
-           // dark fill so it inverts the light-mode white shape; clear any square
-           // wrapper so it never reads as a box. Bounded scan.
-           "try{var RB=document.querySelectorAll("
-             "'[class*=heart],[class*=wish],[class*=favor],[class*=compare],"
-             "[aria-label*=ompare],[data-csa-c-content-id*=ompare]');"
-             "for(var rbi=0;rbi<RB.length&&rbi<100;rbi++){var rbe=RB[rbi];"
-               "if(rbe.tagName&&rbe.tagName.toLowerCase()==='img')continue;"
-               "var rbr=rbe.getBoundingClientRect();"
-               "if(rbr.width<12||rbr.height<12||rbr.width>320)continue;"
-               "var rbc=getComputedStyle(rbe);"
-               "var brad=parseFloat(rbc.borderTopLeftRadius)||0;"
-               "var mn=Math.min(rbr.width,rbr.height);"
-               "var round=brad>=mn*0.25;"
-               "var lb=lum(rbc.backgroundColor);"
-               "if(round){"
-                 // a light/near-white disc or pill -> dark; keep its radius.
-                 "if(lb===null||lb>0.3){rbe.style.setProperty('background-color',BG,'important');}}"
-               "else{"
-                 // square wrapper carrying a fill -> clear it so no box shows.
-                 "if(lb!==null&&lb<0.35){rbe.style.setProperty('background-color','transparent','important');}}"
-             "}}catch(e){}"
            // HEARTS. Two parts, kept separate so they cannot fight: darken the circle
            // (a light background on the element or a near ancestor) and lighten the
            // glyph by whatever actually draws it. Doing this by mechanism avoids the
@@ -863,7 +841,28 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                  "fd.push(fe2.tagName.toLowerCase()+'.'+String(cn4||'').split(' ')[0].slice(0,22)"
                    "+'@'+Math.round(r2.width)+'x'+Math.round(r2.height)+'|'+src2.slice(0,46));}"
              "}catch(e){}"
+             "var btree='';try{"
+               "var findBtn=function(sel){var q=document.querySelectorAll(sel);"
+                 "for(var z=0;z<q.length;z++){var rr=q[z].getBoundingClientRect();"
+                   "if(rr.width>20&&rr.height>20)return q[z];}return null;};"
+               "var dumpBtn=function(el,tag){if(!el)return '';var top=el,up=0;"
+                 "while(top.parentElement&&up++<2)top=top.parentElement;"
+                 "var stk=[top],out=[],gd=0;"
+                 "while(stk.length&&out.length<14&&gd++<120){var nd=stk.shift();"
+                   "var cs=getComputedStyle(nd),rc=nd.getBoundingClientRect();"
+                   "var cn=nd.className;if(cn&&cn.baseVal!==undefined)cn=cn.baseVal;"
+                   "out.push(nd.tagName.toLowerCase()+'.'+String(cn||'').split(' ')[0].slice(0,16)"
+                     "+'@'+Math.round(rc.width)+'x'+Math.round(rc.height)"
+                     "+'|bg='+cs.backgroundColor.replace(/ /g,'')"
+                     "+'|rad='+(parseFloat(cs.borderTopLeftRadius)||0)"
+                     "+'|bgi='+(cs.backgroundImage==='none'?'-':'Y'));"
+                   "for(var ci=0;ci<nd.children.length;ci++)stk.push(nd.children[ci]);}"
+                 "return ' '+tag+'='+out.join(' ~ ');};"
+               "btree=dumpBtn(findBtn('[aria-label*=ompare],[class*=compare],[data-csa-c-content-id*=ompare]'),'CMPTREE')"
+                 "+dumpBtn(findBtn('[class*=heart],[class*=wish]'),'HRTBTN');"
+             "}catch(e){}"
              "pr=' url='+String(location.pathname||'').slice(0,28)"
+               "+btree"
                "+(fd.length?(' FADE='+fd.join(' ~ ')):' FADE=none')"
                "+(window.__AD_EARLY__?(' EARLY='+window.__AD_EARLY__):'')"
                "+(acc.length?(' probe='+acc.join(' ')):' probe=none')"
