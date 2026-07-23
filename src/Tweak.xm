@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.84.0"
+#define AD_VERSION "v5.85.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -712,7 +712,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "for(var ci=0;ci<CMP.length&&ci<40;ci++){var pill=CMP[ci];"
                "pill.style.setProperty('background-color',BG,'important');"
                "var pr=pill.getBoundingClientRect();var box=pill.parentElement,bd=0;"
-               "while(box&&bd++<3){var br=box.getBoundingClientRect();"
+               "while(box&&bd++<7){var br=box.getBoundingClientRect();"
                  "if(br.width<=pr.width+40&&br.height<=pr.height+40){"
                    "var bc=getComputedStyle(box);"
                    "if((parseFloat(bc.borderTopLeftRadius)||0)<8&&lum(bc.backgroundColor)!==null&&lum(bc.backgroundColor)<0.35)"
@@ -725,8 +725,8 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "disc.style.setProperty('border-radius','50%','important');"
                "disc.style.setProperty('background-color',BG,'important');"
                "var hb=disc.parentElement,hd=0;"
-               "while(hb&&hd++<3){var hbr=hb.getBoundingClientRect();"
-                 "if(hbr.width>hr.width&&hbr.width<130){"
+               "while(hb&&hd++<7){var hbr=hb.getBoundingClientRect();"
+                 "if(hbr.width>=hr.width&&hbr.width<140&&hbr.height<140){"
                    "var hbc=getComputedStyle(hb);"
                    "if((parseFloat(hbc.borderTopLeftRadius)||0)<8&&lum(hbc.backgroundColor)!==null&&lum(hbc.backgroundColor)<0.35)"
                      "hb.style.setProperty('background-color','transparent','important');}"
@@ -1000,21 +1000,6 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                 @try {
                     if (![r isKindOfClass:[NSString class]]) return;
                     NSString *res = (NSString *)r;
-                    // Engine absent (SMASH / store-mode webviews created off the
-                    // path our documentStart userscript covers). Inject it now and
-                    // re-apply shortly after so the page themes without a reload.
-                    if ([res isEqualToString:@"noDR"]){
-                        NSNumber *tries = objc_getAssociatedObject(wv, kADBootedKey);
-                        int tc = tries.intValue;
-                        if (tc < 20){   // bounded: an empty DOM on first sight means
-                                        // retry until the real content loads, then
-                                        // reapply stops returning noDR and this ends.
-                            objc_setAssociatedObject(wv, kADBootedKey, @(tc + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                            ADBootstrapDarkReaderIn(wv);
-                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250*1000000LL),
-                                dispatch_get_main_queue(), ^{ @try { ADEnableDarkReaderIn(wv); } @catch(...) {} });
-                        }
-                    }
                     // 'n/bfix' = text colours lifted / blend modes neutralised.
                     // 'nofix'  = the repair function is not defined in this document.
                     // Deduped per URL+result so a settled page cannot spam the log.
@@ -1239,26 +1224,12 @@ static void ADWalkWebViews(UIView *v){
         for (UIView *s in v.subviews) ADWalkWebViews(s);
     } @catch(...) {}
 }
-// Store-mode webviews (pharmacy via SMASH) live on a presented or child view
-// controller whose view is not in the plain window subview chain at walk time.
-// Follow the controller hierarchy as well so those webviews are found.
-static void ADWalkVCWebViews(UIViewController *vc, int depth){
-    if (!vc || depth > 12) return;
-    @try {
-        if (vc.isViewLoaded && vc.view) ADWalkWebViews(vc.view);
-        for (UIViewController *ch in vc.childViewControllers) ADWalkVCWebViews(ch, depth + 1);
-        if (vc.presentedViewController) ADWalkVCWebViews(vc.presentedViewController, depth + 1);
-    } @catch(...) {}
-}
 static void ADInjectAllWebViews(void){
     @try {
         gWebSeen = 0;
         for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
             if (![sc isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *w in ((UIWindowScene *)sc).windows){
-                ADWalkWebViews(w);
-                ADWalkVCWebViews(w.rootViewController, 0);
-            }
+            for (UIWindow *w in ((UIWindowScene *)sc).windows) ADWalkWebViews(w);
         }
         static int lastReported = -1;
         if (gWebSeen != lastReported){ ADLog(@"web views themed: %d", gWebSeen); lastReported = gWebSeen; }
@@ -2157,7 +2128,7 @@ static const void *kADScrollPendKey = &kADScrollPendKey;
                 UIScrollView *ss = ws;
                 if (!ss) return;
                 objc_setAssociatedObject(ss, kADScrollPendKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                @try { if (ADRecolorOn() && ss.window){ ADSweepViewTree(ss, 0, NO); ADInjectAllWebViews(); } } @catch(...) {}
+                @try { if (ADRecolorOn() && ss.window) ADSweepViewTree(ss, 0, NO); } @catch(...) {}
             });
     } @catch(...) {}
 }
@@ -3007,7 +2978,6 @@ static void ADClaimStatusBarFor(Class c){
 }
 
 static int gTabDumpLeft = 16;   // one-shot budget, refreshed on each app launch
-static int gSweepLayerLog = 10;   // budget for LAYER-LIGHT diagnostics
 static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
 static int gSwLabelFixed = 0, gSwTemplateSeen = 0, gSwTintFixed = 0;
 static char gSwSample[96] = {0};
@@ -3103,38 +3073,7 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
             UIColor *m = ADModifyUIColor(bg, ADColorRoleBackground);
             if (m) v.backgroundColor = m;
         }
-        // LATE / LAYER-PAINTED light surfaces (the pharmacy pink & light-blue
-        // sections). Their colour is not on v.backgroundColor -- it sits on the
-        // layer or is drawn -- so the check above never saw it. Read the layer
-        // directly, darken a large light fill there, and log the first few so an
-        // offender we still cannot reach is named rather than guessed.
-        @try {
-            if (!ADIsWebKitOwned(v)){
-                CGFloat vw = v.bounds.size.width, vh = v.bounds.size.height;
-                if (vw >= 160 && vh >= 60){
-                    CGColorRef lc = v.layer.backgroundColor;
-                    if (lc){
-                        const CGFloat *cp = CGColorGetComponents(lc);
-                        size_t ncc = CGColorGetNumberOfComponents(lc);
-                        CGFloat lr=0,lg=0,lb=0,la=1;
-                        if (ncc >= 4){ lr=cp[0]; lg=cp[1]; lb=cp[2]; la=cp[3]; }
-                        else if (ncc == 2){ lr=lg=lb=cp[0]; la=cp[1]; }
-                        if (la > 0.5){
-                            CGFloat ll = 0.2126*lr + 0.7152*lg + 0.0722*lb;
-                            if (ll > 0.55){
-                                if (gSweepLayerLog > 0){ gSweepLayerLog--;
-                                    ADLog(@"sweep: LAYER-LIGHT %s %.0fx%.0f rgb=%.2f,%.2f,%.2f viewbg=%d draws=%d",
-                                          object_getClassName(v), vw, vh, lr,lg,lb,
-                                          v.backgroundColor?1:0,
-                                          ([v methodForSelector:@selector(drawRect:)] !=
-                                           [UIView instanceMethodForSelector:@selector(drawRect:)])?1:0); }
-                                v.layer.backgroundColor = ADColorFromHex(gP.bgHex).CGColor;
-                            }
-                        }
-                    }
-                }
-            }
-        } @catch(...) {}
+
         // GLYPH RESCUE. Our setImage: hooks only fire when the app calls that setter.
         // An icon supplied through UIButtonConfiguration (iOS 15+), set during init,
         // or assigned before injection never triggers them and stays black. Reading
@@ -3486,8 +3425,8 @@ static void ADStartTimer(void){
 // coalesced burst (0 / 60 / 200 / 500 ms) covers the mount-to-first-paint window
 // without a standing cost.
 static void ADReapplyBurst(void){
-    static const int64_t delays_ms[] = {0, 60, 200, 500, 1000, 2000, 3500};
-    for (int i = 0; i < (int)(sizeof(delays_ms)/sizeof(delays_ms[0])); i++){
+    static const int64_t delays_ms[] = {0, 60, 200, 500};
+    for (int i = 0; i < 4; i++){
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delays_ms[i]*1000000LL),
             dispatch_get_main_queue(), ^{ @try {
                 ADForceWindowsDarkTrait();
