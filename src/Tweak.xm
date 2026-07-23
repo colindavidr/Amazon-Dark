@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.85.0"
+#define AD_VERSION "v5.86.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -430,6 +430,16 @@ static NSString *ADFixesLiteral(void){
              "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon],"
              "[class*=wish] i[class*=a-icon]"
              "{background-color:transparent !important;}"
+             // Heart disc -> dark CIRCLE with a silver border (stock look,
+             // inverted). The active/heart layer at button size is the visible
+             // box; round it. box-sizing keeps the border inside the 32px.
+             "[class*=lists-framework-active],[class*=lists-framework-heart]:not(img)"
+             "{border-radius:50% !important;box-sizing:border-box !important;}"
+             "[class*=lists-framework-active]"
+             "{border:1px solid rgba(255,255,255,0.5) !important;}"
+             // Compare pill -> matching silver border on the existing oval.
+             "[class*=copilot-compare]"
+             "{border:1px solid rgba(255,255,255,0.5) !important;box-sizing:border-box !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
              // legible on first paint instead of after the repair catches up.
