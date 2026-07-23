@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.106.0"
+#define AD_VERSION "v5.107.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -795,6 +795,17 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "}}catch(e){}"
            // Clear stray dark square wrappers around the buttons (the box that
            // can extend past the pill). Shapes/borders are persistent CSS above.
+           "try{var AIC=document.querySelectorAll('[class*=a-icon]');"
+             "for(var ai=0;ai<AIC.length&&ai<200;ai++){var ae=AIC[ai];"
+               "if(ae.__adGlyph)continue;"
+               "var acn=ae.className;if(acn&&acn.baseVal!==undefined)acn=acn.baseVal;acn=String(acn||'');"
+               "if(/star|prime|logo|flag|swatch|thumb|sponsor|product|photo|-alt/i.test(acn))continue;"
+               "var acs=getComputedStyle(ae),abi=acs.backgroundImage||acs.webkitMaskImage||acs.maskImage;"
+               "if(!abi||abi==='none'||abi.indexOf('url(')<0)continue;"
+               "var ar=ae.getBoundingClientRect();"
+               "if(ar.width>5&&ar.width<=44&&ar.height>5&&ar.height<=44){"
+                 "ae.style.setProperty('filter','brightness(0) invert(1)','important');ae.__adGlyph=1;}}"
+           "}catch(e){}"
            "try{var PRM=document.querySelectorAll('[class*=sub-header-title-font]');"
              "for(var pi=0;pi<PRM.length&&pi<40;pi++){var pt=PRM[pi];"
                "pt.style.setProperty('color','#0f1111','important');"
