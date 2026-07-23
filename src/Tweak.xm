@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.94.0"
+#define AD_VERSION "v5.95.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -430,25 +430,23 @@ static NSString *ADFixesLiteral(void){
              "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon],"
              "[class*=wish] i[class*=a-icon]"
              "{background-color:transparent !important;}"
-             // Square container -> transparent (tripled to outrank our own
-             // [class*=heart] darkening, which is what kept it a dark box).
-             "[class*=puis-heart-position][class*=puis-heart-position][class*=puis-heart-position]"
-             "{background-color:transparent !important;border:0 !important;}"
-             // Round element is lists-framework-action-button. Amazon overrides
-             // border-radius, so shape it with clip-path (which Amazon never
-             // sets); the inset box-shadow ring is clipped to the circle.
+             // CLEAN SLATE. Every prior attempt fought a dark wrapper behind the
+             // button. So clear the ENTIRE heart widget and compare widget to
+             // transparent first (no box, no ring artifacts, no diamond), then
+             // paint ONLY the one button element dark and clip it to shape.
+             "[class*=puis-heart-position],[class*=puis-heart-position] *,"
+             "[class*=lists-framework]:not(img),"
+             "[class*=s-csa-instrument],[class*=s-csa-instrument] *"
+             "{background-color:transparent !important;box-shadow:none !important;border:0 !important;}"
+             // Heart circle: dark fill, clip-path forces the round shape (Amazon
+             // overrides border-radius; it never sets clip-path).
              "[class*=lists-framework-action-button]"
-             "{background-color:#181a1b !important;"
-             "clip-path:circle(50%) !important;border-radius:50% !important;"
-             "box-shadow:inset 0 0 0 1px rgba(255,255,255,0.6) !important;"
-             "border:0 !important;box-sizing:border-box !important;}"
-             // Compare -> every copilot-compare layer is pill-shaped and dark, so
-             // the square wrapper can never render as a box. One chrome ring, and
-             // its label forced light (it was dark-on-dark = invisible).
+             "{background-color:#181a1b !important;clip-path:circle(50%) !important;"
+             "box-sizing:border-box !important;}"
+             // Compare pill: dark fill, clipped to a pill; label forced light with
+             // -webkit-text-fill-color (beats Dark Reader's inline colour).
              "[class*=copilot-compare]"
-             "{background-color:#181a1b !important;"
-             "clip-path:inset(0 round 999px) !important;border-radius:999px !important;"
-             "box-shadow:inset 0 0 0 1px rgba(255,255,255,0.6) !important;border:0 !important;"
+             "{background-color:#181a1b !important;clip-path:inset(0 round 999px) !important;"
              "box-sizing:border-box !important;"
              "color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
              "[class*=copilot-compare] *"
