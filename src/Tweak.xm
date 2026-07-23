@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.91.0"
+#define AD_VERSION "v5.92.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -430,16 +430,17 @@ static NSString *ADFixesLiteral(void){
              "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon],"
              "[class*=wish] i[class*=a-icon]"
              "{background-color:transparent !important;}"
-             // Heart disc -> persistent dark CIRCLE with a chrome ring; overflow
-             // clips any inner square to the circle.
-             "[class*=puis-heart-position]"
-             "{background-color:#181a1b !important;border-radius:50% !important;"
-             "overflow:hidden !important;box-sizing:border-box !important;"
-             "border:1px solid rgba(255,255,255,0.55) !important;}"
-             "[class*=puis-heart-position] [class*=lists-framework]:not(img),"
-             "[class*=puis-heart-position] [class*=changeover],"
-             "[class*=puis-heart-position] [class*=a-section]"
+             // Square container -> transparent (tripled to outrank our own
+             // [class*=heart] darkening, which is what kept it a dark box).
+             "[class*=puis-heart-position][class*=puis-heart-position][class*=puis-heart-position]"
              "{background-color:transparent !important;border:0 !important;}"
+             // Round element (Amazon already gives it rad=50) -> dark circle with
+             // a chrome ring. Doubled specificity so the fill/border stick.
+             "[class*=lists-framework-active][class*=lists-framework-active],"
+             "[class*=lists-framework-heart][class*=lists-framework-heart]"
+             "{background-color:#181a1b !important;border-radius:50% !important;"
+             "box-sizing:border-box !important;"
+             "border:1px solid rgba(255,255,255,0.55) !important;}"
              // Compare -> every copilot-compare layer is pill-shaped and dark, so
              // the square wrapper can never render as a box. One chrome ring.
              "[class*=copilot-compare]"
@@ -730,7 +731,8 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                      "&&ir.top<tr.bottom&&ir.bottom>tr.top){overImg=true;break;}}"
                  "if(overImg||lum(pcs2.backgroundColor)!==null)break;"
                  "pe2=pe2.parentElement;}}catch(e){}"
-             "if(overImg)continue;"
+             "if(overImg){if(lum(cs.color)!==null&&lum(cs.color)>0.5)"
+                 "el.style.setProperty('color','#0f1111','important');continue;}"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
            // HEARTS. Two parts, kept separate so they cannot fight: darken the circle
@@ -895,7 +897,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                  "while(stk.length&&out.length<14&&gd++<120){var nd=stk.shift();"
                    "var cs=getComputedStyle(nd),rc=nd.getBoundingClientRect();"
                    "var cn=nd.className;if(cn&&cn.baseVal!==undefined)cn=cn.baseVal;"
-                   "out.push(nd.tagName.toLowerCase()+'.'+String(cn||'').split(' ')[0].slice(0,16)"
+                   "out.push(nd.tagName.toLowerCase()+'.'+String(cn||'').split(' ')[0].slice(0,30)"
                      "+'@'+Math.round(rc.width)+'x'+Math.round(rc.height)"
                      "+'|bg='+cs.backgroundColor.replace(/ /g,'')"
                      "+'|rad='+(parseFloat(cs.borderTopLeftRadius)||0)"
