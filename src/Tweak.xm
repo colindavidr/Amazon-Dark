@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.99.0"
+#define AD_VERSION "v5.100.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -447,12 +447,7 @@ static NSString *ADFixesLiteral(void){
              "mask-image:radial-gradient(circle,#000 0 49%,rgba(0,0,0,0) 50%) !important;}"
              // Compare pill: dark fill, clipped to a pill; label forced light with
              // -webkit-text-fill-color (beats Dark Reader's inline colour).
-             "[class*=copilot-compare]"
-             "{background-color:#181a1b !important;clip-path:inset(0 round 999px) !important;"
-             "box-sizing:border-box !important;box-shadow:none !important;"
-             "border:1.5px solid rgba(255,255,255,0.6) !important;"
-             "color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
-             "[class*=copilot-compare] *"
+             "[class*=copilot-compare],[class*=copilot-compare] *"
              "{color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
@@ -783,7 +778,21 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "}}catch(e){}"
            // Clear stray dark square wrappers around the buttons (the box that
            // can extend past the pill). Shapes/borders are persistent CSS above.
-           "try{var RB=document.querySelectorAll('[class*=copilot-compare],[class*=puis-heart-position]');"
+           "try{var CM2=document.querySelectorAll('[class*=copilot-compare]');"
+             "for(var mi=0;mi<CM2.length&&mi<40;mi++){var mc=CM2[mi];"
+               "var mcs=getComputedStyle(mc),mr=mc.getBoundingClientRect();"
+               "if(mr.width<20||mr.height<10)continue;"
+               "var mrad=parseFloat(mcs.borderTopLeftRadius)||0;"
+               "if(mrad>=Math.min(mr.width,mr.height)*0.4){"
+                 "mc.style.setProperty('background-color',BG,'important');"
+                 "mc.style.setProperty('border','1.5px solid rgba(255,255,255,0.6)','important');"
+                 "mc.style.setProperty('box-sizing','border-box','important');"
+                 "mc.style.setProperty('box-shadow','none','important');}"
+               "else{"
+                 "mc.style.setProperty('background-color','transparent','important');"
+                 "mc.style.setProperty('border','0','important');"
+                 "mc.style.setProperty('box-shadow','none','important');}}"
+           "var RB=document.querySelectorAll('[class*=copilot-compare],[class*=puis-heart-position]');"
              "for(var ri=0;ri<RB.length&&ri<60;ri++){var rbe=RB[ri];"
                "var r0=rbe.getBoundingClientRect();if(r0.width<16)continue;"
                "var wb=rbe.parentElement,wd=0;"
