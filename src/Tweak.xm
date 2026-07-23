@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.71.0"
+#define AD_VERSION "v5.72.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -618,8 +618,18 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                // small search-bar icon is the black box, not a feature.
                "if(pw2.width>0&&pw2.width<=48&&pw2.height>0&&pw2.height<=48){"
                  "el.style.setProperty('background-color','transparent','important');}"
-               "else if(pw2.width>10&&pw2.width<=220&&bgOf(el.parentElement||el)>0.5){"
+               // Any image sitting on a LIGHT surface -- promo cards, banners,
+               // hero lockups like the pharmacy wordmark -- must not carry the
+               // dark backdrop. No width cap: a wide logo needs this too.
+               "else if(bgOf(el.parentElement||el)>0.5){"
                  "el.style.setProperty('background-color','transparent','important');}}"
+             "try{if(lfix<500&&el.tagName){var tn3=el.tagName.toLowerCase();"
+               "if(tn3!=='img'&&tn3!=='svg'&&tn3!=='canvas'){"
+                 "var ownbl=lum(cs.backgroundColor);"
+                 "if(ownbl!==null&&ownbl<0.25){"
+                   "var pbl=bgOf(el.parentElement||el);"
+                   "if(pbl>0.55){el.style.setProperty('background-color','transparent','important');}}}}"
+             "}catch(e){}"
              "if(BAD[cs.mixBlendMode]&&bfix<800){"
                "el.style.setProperty('mix-blend-mode','normal','important');"
                "el.style.setProperty('isolation','auto','important');bfix++;}"
