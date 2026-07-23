@@ -12,13 +12,19 @@ export ARCHS  = arm64 arm64e
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = AmazonDark
+TWEAK_NAME = AmazonDark AmazonDarkSB
 
 AmazonDark_FILES   = src/Tweak.xm src/ADColor.m src/ADImageKey.m
 AmazonDark_CFLAGS  = -fobjc-arc -fexceptions
 AmazonDark_CFLAGS += -Wno-unused-variable -Wno-unused-function
 AmazonDark_CFLAGS += -Wno-deprecated-declarations -Wno-error
 AmazonDark_FRAMEWORKS = UIKit Foundation WebKit CoreGraphics QuartzCore
+
+# SpringBoard-side dark launch cover (injects ONLY into com.apple.springboard
+# via AmazonDarkSB.plist). Defensive: every hook guarded, cover auto-removes.
+AmazonDarkSB_FILES      = src/AmazonDarkSB.xm
+AmazonDarkSB_CFLAGS     = -fobjc-arc -fexceptions -Wno-unused-variable -Wno-error
+AmazonDarkSB_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore
 
 # Bundle the official Dark Reader UMD (resources/) alongside the dylib as
 # AmazonDark.bundle so the tweak can read darkreader.js at runtime.
