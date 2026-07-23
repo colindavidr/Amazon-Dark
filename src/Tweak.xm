@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.98.0"
+#define AD_VERSION "v5.99.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -449,8 +449,8 @@ static NSString *ADFixesLiteral(void){
              // -webkit-text-fill-color (beats Dark Reader's inline colour).
              "[class*=copilot-compare]"
              "{background-color:#181a1b !important;clip-path:inset(0 round 999px) !important;"
-             "box-sizing:border-box !important;"
-             "box-shadow:inset 0 0 0 1.5px rgba(255,255,255,0.6) !important;"
+             "box-sizing:border-box !important;box-shadow:none !important;"
+             "border:1.5px solid rgba(255,255,255,0.6) !important;"
              "color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
              "[class*=copilot-compare] *"
              "{color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
@@ -947,6 +947,10 @@ static NSString *ADDarkReaderBootstrapBuild(void){
            "_t=setTimeout(function(){try{window.__AMZDARK_FIXCONTRAST__();}catch(e){}},150);})"
            ".observe(document.documentElement,{childList:true,subtree:true});}catch(e){}"
          "window.__AMZDARK_APPLY__();"
+         // Fast early passes so promo text / buttons are corrected before the
+         // eye registers Dark Reader's first-paint colours. One-shot, bounded.
+         "try{[30,90,180,320,600].forEach(function(t){setTimeout(function(){"
+           "try{window.__AMZDARK_FIXCONTRAST__();}catch(e){}},t);});}catch(e){}"
          // Re-apply when the page is restored from the back-forward cache (returning
          // to a tab). pageshow.persisted is true exactly in that case, and it is the
          // event that fires when no navigation happens — the cart's "went white on
