@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.75.0"
+#define AD_VERSION "v5.76.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -155,6 +155,7 @@ static inline BOOL ADIsModifiedImage(UIImage *im){ return im && objc_getAssociat
 static inline void ADMarkModifiedImage(UIImage *im){ if (im) objc_setAssociatedObject(im, kADModImageKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
 static UIColor *ADColorFromHex(const char *hex);
 static UIImage *ADGlyphify(UIImage *img);
+static UIImage *ADGlyphifyForView(UIImage *img, UIView *v);
 static void ADRunProbe(void);
 
 static long ADPrefLong(NSDictionary *d, NSString *k, long def){
@@ -2403,7 +2404,7 @@ static void ADRunProbe(void){
         // (1b) Catch-up for glyphs assigned BEFORE our hooks were installed. New
         // assignments are handled earlier and more reliably by the setImage: hook.
         {
-            UIImage *tpl = ADGlyphify(self.image);
+            UIImage *tpl = ADGlyphifyForView(self.image, self);
             if (tpl){
                 ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
                 self.image = tpl;
@@ -2548,6 +2549,19 @@ static NSDictionary *ADRecolorTextAttrs(NSDictionary *attrs){
 // scrolling.
 static const void *kADGlyphChecked = &kADGlyphChecked;
 
+// Only convert glyph-sized artwork. Category thumbnails and other content
+// illustrations are larger than any real monochrome UI glyph; whitening them
+// destroys their detail. Tab-bar icons are exempt -- they are tinted by
+// selection state on their own path and must still convert.
+static UIImage *ADGlyphifyForView(UIImage *img, UIView *v){
+    @try {
+        if (v && !ADInTabBarChain(v)){
+            CGFloat w = v.bounds.size.width, h = v.bounds.size.height;
+            if (w > 40 || h > 40) return nil;
+        }
+    } @catch(...) {}
+    return ADGlyphify(img);
+}
 static UIImage *ADGlyphify(UIImage *img){
     if (!gP.enabled || !gP.imageBackdrop || !img) return nil;
     @try {
@@ -2595,7 +2609,7 @@ static UIImage *ADGlyphify(UIImage *img){
             gADSettingImage = NO;
             return;
         }
-        UIImage *tpl = ADGlyphify(image);
+        UIImage *tpl = ADGlyphifyForView(image, self);
         if (tpl) {
             ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
             %orig(tpl);
@@ -2624,7 +2638,7 @@ static UIImage *ADGlyphify(UIImage *img){
             ADApplyBarTint(self, ADViewIsSelectedInBar(self));
             return;
         }
-        UIImage *tpl = ADGlyphify(image);
+        UIImage *tpl = ADGlyphifyForView(image, self);
         if (tpl) {
             ((UIView *)self).tintColor = ADColorFromHex(gP.fgHex);
             %orig(tpl, state);
@@ -2857,6 +2871,7 @@ static void ADClaimStatusBarFor(Class c){
 }
 
 static int gTabDumpLeft = 16;   // one-shot budget, refreshed on each app launch
+static int gSweepLayerLog = 10;   // budget for LAYER-LIGHT diagnostics
 static int gSwImgSeen = 0, gSwGlyphFixed = 0, gSwDarkLabels = 0, gSwViews = 0;
 static int gSwLabelFixed = 0, gSwTemplateSeen = 0, gSwTintFixed = 0;
 static char gSwSample[96] = {0};
@@ -2952,6 +2967,38 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
             UIColor *m = ADModifyUIColor(bg, ADColorRoleBackground);
             if (m) v.backgroundColor = m;
         }
+        // LATE / LAYER-PAINTED light surfaces (the pharmacy pink & light-blue
+        // sections). Their colour is not on v.backgroundColor -- it sits on the
+        // layer or is drawn -- so the check above never saw it. Read the layer
+        // directly, darken a large light fill there, and log the first few so an
+        // offender we still cannot reach is named rather than guessed.
+        @try {
+            if (!ADIsWebKitOwned(v)){
+                CGFloat vw = v.bounds.size.width, vh = v.bounds.size.height;
+                if (vw >= 160 && vh >= 60){
+                    CGColorRef lc = v.layer.backgroundColor;
+                    if (lc){
+                        const CGFloat *cp = CGColorGetComponents(lc);
+                        size_t ncc = CGColorGetNumberOfComponents(lc);
+                        CGFloat lr=0,lg=0,lb=0,la=1;
+                        if (ncc >= 4){ lr=cp[0]; lg=cp[1]; lb=cp[2]; la=cp[3]; }
+                        else if (ncc == 2){ lr=lg=lb=cp[0]; la=cp[1]; }
+                        if (la > 0.5){
+                            CGFloat ll = 0.2126*lr + 0.7152*lg + 0.0722*lb;
+                            if (ll > 0.55){
+                                if (gSweepLayerLog > 0){ gSweepLayerLog--;
+                                    ADLog(@"sweep: LAYER-LIGHT %s %.0fx%.0f rgb=%.2f,%.2f,%.2f viewbg=%d draws=%d",
+                                          object_getClassName(v), vw, vh, lr,lg,lb,
+                                          v.backgroundColor?1:0,
+                                          ([v methodForSelector:@selector(drawRect:)] !=
+                                           [UIView instanceMethodForSelector:@selector(drawRect:)])?1:0); }
+                                v.layer.backgroundColor = ADColorFromHex(gP.bgHex).CGColor;
+                            }
+                        }
+                    }
+                }
+            }
+        } @catch(...) {}
         // GLYPH RESCUE. Our setImage: hooks only fire when the app calls that setter.
         // An icon supplied through UIButtonConfiguration (iOS 15+), set during init,
         // or assigned before injection never triggers them and stays black. Reading
@@ -2987,7 +3034,7 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                         } @catch(...) {}
                     }
                 }
-                UIImage *tpl = ADGlyphify(((UIImageView *)v).image);
+                UIImage *tpl = ADGlyphifyForView(((UIImageView *)v).image, v);
                 if (tpl) gSwGlyphFixed++;
                 if (tpl){
                     ((UIView *)v).tintColor = ADColorFromHex(gP.fgHex);
@@ -3011,7 +3058,7 @@ static void ADSweepViewTree(UIView *v, int depth, BOOL inTabBar){
                         gSwTintFixed++;
                     }
                 }
-                UIImage *tpl = ADGlyphify(cur);
+                UIImage *tpl = ADGlyphifyForView(cur, b);
                 if (tpl){
                     ((UIView *)b).tintColor = ADColorFromHex(gP.fgHex);
                     [b setImage:tpl forState:UIControlStateNormal];
