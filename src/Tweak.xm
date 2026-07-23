@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.77.0"
+#define AD_VERSION "v5.78.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -156,6 +156,7 @@ static inline void ADMarkModifiedImage(UIImage *im){ if (im) objc_setAssociatedO
 static UIColor *ADColorFromHex(const char *hex);
 static UIImage *ADGlyphify(UIImage *img);
 static UIImage *ADGlyphifyForView(UIImage *img, UIView *v);
+static BOOL ADIsChromeGlyphContext(UIView *v);
 static void ADRunProbe(void);
 
 static long ADPrefLong(NSDictionary *d, NSString *k, long def){
@@ -1142,12 +1143,26 @@ static void ADWalkWebViews(UIView *v){
         for (UIView *s in v.subviews) ADWalkWebViews(s);
     } @catch(...) {}
 }
+// Store-mode webviews (pharmacy via SMASH) live on a presented or child view
+// controller whose view is not in the plain window subview chain at walk time.
+// Follow the controller hierarchy as well so those webviews are found.
+static void ADWalkVCWebViews(UIViewController *vc, int depth){
+    if (!vc || depth > 12) return;
+    @try {
+        if (vc.isViewLoaded && vc.view) ADWalkWebViews(vc.view);
+        for (UIViewController *ch in vc.childViewControllers) ADWalkVCWebViews(ch, depth + 1);
+        if (vc.presentedViewController) ADWalkVCWebViews(vc.presentedViewController, depth + 1);
+    } @catch(...) {}
+}
 static void ADInjectAllWebViews(void){
     @try {
         gWebSeen = 0;
         for (UIScene *sc in [UIApplication sharedApplication].connectedScenes){
             if (![sc isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *w in ((UIWindowScene *)sc).windows) ADWalkWebViews(w);
+            for (UIWindow *w in ((UIWindowScene *)sc).windows){
+                ADWalkWebViews(w);
+                ADWalkVCWebViews(w.rootViewController, 0);
+            }
         }
         static int lastReported = -1;
         if (gWebSeen != lastReported){ ADLog(@"web views themed: %d", gWebSeen); lastReported = gWebSeen; }
@@ -2567,7 +2582,7 @@ static const void *kADGlyphChecked = &kADGlyphChecked;
 // selection state on their own path and must still convert.
 static UIImage *ADGlyphifyForView(UIImage *img, UIView *v){
     @try {
-        if (v && !ADInTabBarChain(v)){
+        if (v && !ADInTabBarChain(v) && !ADIsChromeGlyphContext(v)){
             CGFloat w = v.bounds.size.width, h = v.bounds.size.height;
             if (w > 40 || h > 40) return nil;
         }
