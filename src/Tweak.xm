@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.103.0"
+#define AD_VERSION "v5.105.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -455,6 +455,11 @@ static NSString *ADFixesLiteral(void){
              "[class*=a-cardui-header] [class*=sub-header-title-font],"
              "[class*=sub-header-title-font]"
              "{color:#0f1111 !important;-webkit-text-fill-color:#0f1111 !important;}"
+             // Kill the compare button's scrim pseudo-elements (the dark
+             // rectangle that extends past the pill).
+             "[class*=copilot-compare]::before,[class*=copilot-compare]::after"
+             "{background:none !important;background-color:transparent !important;"
+             "box-shadow:none !important;content:none !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
              // legible on first paint instead of after the repair catches up.
@@ -808,7 +813,8 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "if(mrad>=Math.min(mr.width,mr.height)*0.4){"
                  "mc.style.setProperty('background-color',BG,'important');"
                  "mc.style.setProperty('background-image','none','important');"
-                 "mc.style.setProperty('clip-path','inset(0 round 999px)','important');"
+                 "mc.style.setProperty('border-radius','0','important');"
+                 "mc.style.setProperty('clip-path','none','important');"
                  "mc.style.setProperty('overflow','hidden','important');"
                  "mc.style.setProperty('border','1.5px solid rgba(255,255,255,0.6)','important');"
                  "mc.style.setProperty('box-sizing','border-box','important');"
