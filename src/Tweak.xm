@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.83.0"
+#define AD_VERSION "v5.84.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -702,6 +702,36 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "var fl=lum(cs.color);if(fl===null)continue;"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
+           // ROUND BUTTON SHAPES (compare oval, heart circle). The probe named the
+           // exact nodes: the visible box is a small square a-section wrapper; the
+           // real button is round (copilot-compare rad=99, or the heart disc which
+           // we round to 50%). Keep the round element dark, clear only its small
+           // square wrapper. Everything here is size-bounded to the button.
+           "try{"
+             "var CMP=document.querySelectorAll('[class*=copilot-compare]');"
+             "for(var ci=0;ci<CMP.length&&ci<40;ci++){var pill=CMP[ci];"
+               "pill.style.setProperty('background-color',BG,'important');"
+               "var pr=pill.getBoundingClientRect();var box=pill.parentElement,bd=0;"
+               "while(box&&bd++<3){var br=box.getBoundingClientRect();"
+                 "if(br.width<=pr.width+40&&br.height<=pr.height+40){"
+                   "var bc=getComputedStyle(box);"
+                   "if((parseFloat(bc.borderTopLeftRadius)||0)<8&&lum(bc.backgroundColor)!==null&&lum(bc.backgroundColor)<0.35)"
+                     "box.style.setProperty('background-color','transparent','important');}"
+                 "box=box.parentElement;}}"
+             "var DSC=document.querySelectorAll('[class*=puis-heart-position],[class*=lists-framework-act]');"
+             "for(var di=0;di<DSC.length&&di<60;di++){var disc=DSC[di];"
+               "if(disc.tagName&&disc.tagName.toLowerCase()==='img')continue;"
+               "var hr=disc.getBoundingClientRect();if(hr.width<12||hr.width>64)continue;"
+               "disc.style.setProperty('border-radius','50%','important');"
+               "disc.style.setProperty('background-color',BG,'important');"
+               "var hb=disc.parentElement,hd=0;"
+               "while(hb&&hd++<3){var hbr=hb.getBoundingClientRect();"
+                 "if(hbr.width>hr.width&&hbr.width<130){"
+                   "var hbc=getComputedStyle(hb);"
+                   "if((parseFloat(hbc.borderTopLeftRadius)||0)<8&&lum(hbc.backgroundColor)!==null&&lum(hbc.backgroundColor)<0.35)"
+                     "hb.style.setProperty('background-color','transparent','important');}"
+                 "hb=hb.parentElement;}}"
+           "}catch(e){}"
            // HEARTS. Two parts, kept separate so they cannot fight: darken the circle
            // (a light background on the element or a near ancestor) and lighten the
            // glyph by whatever actually draws it. Doing this by mechanism avoids the
