@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.72.0"
+#define AD_VERSION "v5.73.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -621,14 +621,17 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                // Any image sitting on a LIGHT surface -- promo cards, banners,
                // hero lockups like the pharmacy wordmark -- must not carry the
                // dark backdrop. No width cap: a wide logo needs this too.
-               "else if(bgOf(el.parentElement||el)>0.5){"
+               "else if(bgOf(el.parentElement||el)>0.06){"
                  "el.style.setProperty('background-color','transparent','important');}}"
              "try{if(lfix<500&&el.tagName){var tn3=el.tagName.toLowerCase();"
                "if(tn3!=='img'&&tn3!=='svg'&&tn3!=='canvas'){"
                  "var ownbl=lum(cs.backgroundColor);"
                  "if(ownbl!==null&&ownbl<0.25){"
                    "var pbl=bgOf(el.parentElement||el);"
-                   "if(pbl>0.55){el.style.setProperty('background-color','transparent','important');}}}}"
+                   // Surface is a distinct colour (teal) or light, and clearly
+                   // lighter than the element's own near-black fill: our box, not
+                   // a real chip. Margin of 0.12 keeps genuine dark-on-dark chips.
+                   "if(pbl>0.12&&pbl>ownbl+0.12){el.style.setProperty('background-color','transparent','important');}}}}"
              "}catch(e){}"
              "if(BAD[cs.mixBlendMode]&&bfix<800){"
                "el.style.setProperty('mix-blend-mode','normal','important');"
@@ -1395,6 +1398,22 @@ static BOOL ADInTabBarChain(UIView *v){
 
 // Search fields and nav bars draw their own background; a dark panel behind a
 // small glyph there reads as a black box rather than a backdrop.
+// True only when the nearest ancestor that paints an opaque background is our
+// dark theme (or unknown). A light or saturated surface returns NO, so the
+// backdrop is skipped there.
+static BOOL ADAncestorSurfaceIsDark(UIView *v){
+    UIView *p = v; int d = 0;
+    while (p && d++ < 10){
+        UIColor *bg = p.backgroundColor;
+        CGFloat r,g,b,a;
+        if (bg && [bg getRed:&r green:&g blue:&b alpha:&a] && a > 0.5){
+            CGFloat l = 0.2126*r + 0.7152*g + 0.0722*b;
+            return l < 0.10;
+        }
+        p = p.superview;
+    }
+    return YES;   // unknown: keep prior behaviour
+}
 static BOOL ADIsChromeGlyphContext(UIView *v){
     UIView *p = v; int d = 0;
     while (p && d++ < 8){
@@ -2338,10 +2357,12 @@ static void ADRunProbe(void){
         }
 
         // (1) Backdrop for TRANSPARENT images — cheap, always-on-when-enabled.
-        // Never behind glyph-sized artwork, and never inside search/nav chrome:
-        // that is what produced the black boxes behind the search-bar icons.
+        // Never behind glyph-sized artwork, never inside search/nav chrome, and
+        // never over a coloured/light surface (a teal or promo header), where a
+        // near-black panel reads as a box instead of a backdrop.
         CGFloat bw = self.bounds.size.width, bh = self.bounds.size.height;
-        if (gP.imageBackdrop && (bw > 48 || bh > 48) && !ADIsChromeGlyphContext(self)){
+        BOOL surfDark = ADAncestorSurfaceIsDark(self);
+        if (gP.imageBackdrop && (bw > 48 || bh > 48) && !ADIsChromeGlyphContext(self) && surfDark){
             UIImage *img = self.image;
             if (img && img.CGImage){
                 CGImageAlphaInfo a = CGImageGetAlphaInfo(img.CGImage);
