@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.93.0"
+#define AD_VERSION "v5.94.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -434,20 +434,25 @@ static NSString *ADFixesLiteral(void){
              // [class*=heart] darkening, which is what kept it a dark box).
              "[class*=puis-heart-position][class*=puis-heart-position][class*=puis-heart-position]"
              "{background-color:transparent !important;border:0 !important;}"
-             // Round element is lists-framework-action-button -> dark circle with
-             // a chrome ring. Tripled specificity so fill/radius/border stick.
-             "[class*=lists-framework-action-button][class*=lists-framework-action-button][class*=lists-framework-action-button]"
-             "{background-color:#181a1b !important;border-radius:50% !important;"
-             "overflow:hidden !important;box-sizing:border-box !important;"
-             "border:1px solid rgba(255,255,255,0.55) !important;}"
+             // Round element is lists-framework-action-button. Amazon overrides
+             // border-radius, so shape it with clip-path (which Amazon never
+             // sets); the inset box-shadow ring is clipped to the circle.
+             "[class*=lists-framework-action-button]"
+             "{background-color:#181a1b !important;"
+             "clip-path:circle(50%) !important;border-radius:50% !important;"
+             "box-shadow:inset 0 0 0 1px rgba(255,255,255,0.6) !important;"
+             "border:0 !important;box-sizing:border-box !important;}"
              // Compare -> every copilot-compare layer is pill-shaped and dark, so
              // the square wrapper can never render as a box. One chrome ring, and
              // its label forced light (it was dark-on-dark = invisible).
              "[class*=copilot-compare]"
-             "{background-color:#181a1b !important;border-radius:999px !important;"
-             "box-sizing:border-box !important;color:#e8e6e3 !important;"
-             "border:1px solid rgba(255,255,255,0.55) !important;}"
-             "[class*=copilot-compare] *{color:#e8e6e3 !important;}"
+             "{background-color:#181a1b !important;"
+             "clip-path:inset(0 round 999px) !important;border-radius:999px !important;"
+             "box-shadow:inset 0 0 0 1px rgba(255,255,255,0.6) !important;border:0 !important;"
+             "box-sizing:border-box !important;"
+             "color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
+             "[class*=copilot-compare] *"
+             "{color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
              // legible on first paint instead of after the repair catches up.
