@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.101.0"
+#define AD_VERSION "v5.102.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -449,6 +449,12 @@ static NSString *ADFixesLiteral(void){
              // -webkit-text-fill-color (beats Dark Reader's inline colour).
              "[class*=copilot-compare],[class*=copilot-compare] *"
              "{color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
+             // Promo/hero card header: no dark box behind it, and its title text
+             // stays the stock dark (it sits on a light hero image).
+             "[class*=a-cardui-header]{background-color:transparent !important;}"
+             "[class*=a-cardui-header] [class*=sub-header-title-font],"
+             "[class*=sub-header-title-font]"
+             "{color:#0f1111 !important;-webkit-text-fill-color:#0f1111 !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
              // legible on first paint instead of after the repair catches up.
