@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.90.0"
+#define AD_VERSION "v5.91.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -430,6 +430,22 @@ static NSString *ADFixesLiteral(void){
              "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon],"
              "[class*=wish] i[class*=a-icon]"
              "{background-color:transparent !important;}"
+             // Heart disc -> persistent dark CIRCLE with a chrome ring; overflow
+             // clips any inner square to the circle.
+             "[class*=puis-heart-position]"
+             "{background-color:#181a1b !important;border-radius:50% !important;"
+             "overflow:hidden !important;box-sizing:border-box !important;"
+             "border:1px solid rgba(255,255,255,0.55) !important;}"
+             "[class*=puis-heart-position] [class*=lists-framework]:not(img),"
+             "[class*=puis-heart-position] [class*=changeover],"
+             "[class*=puis-heart-position] [class*=a-section]"
+             "{background-color:transparent !important;border:0 !important;}"
+             // Compare -> every copilot-compare layer is pill-shaped and dark, so
+             // the square wrapper can never render as a box. One chrome ring.
+             "[class*=copilot-compare]"
+             "{background-color:#181a1b !important;border-radius:999px !important;"
+             "box-sizing:border-box !important;"
+             "border:1px solid rgba(255,255,255,0.55) !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
              // legible on first paint instead of after the repair catches up.
@@ -700,13 +716,20 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "if(nd.nodeType===3&&nd.nodeValue&&nd.nodeValue.trim()){t=true;break;}}"
              "if(!t)continue;"
              "var fl=lum(cs.color);if(fl===null)continue;"
-             // Over a background-image (promo/hero card) -> keep original colour.
-             // Walk up: a url() background before any solid colour means imagery.
-             "var overImg=false,pe2=el,pd2=0;"
-             "while(pe2&&pd2++<6){var pcs2=getComputedStyle(pe2);"
-               "if((pcs2.backgroundImage||'').indexOf('url(')>=0){overImg=true;break;}"
-               "if(lum(pcs2.backgroundColor)!==null)break;"
-               "pe2=pe2.parentElement;}"
+             // Text overlaid on a promo/hero IMAGE keeps its own colour. Catches
+             // both a CSS url() background and an <img>/<picture> that actually
+             // OVERLAPS this text (product titles sit BELOW their image, so they
+             // do not overlap and are still themed normally).
+             "var overImg=false;"
+             "try{var tr=el.getBoundingClientRect();var pe2=el,pd2=0;"
+               "while(pe2&&pd2++<6){var pcs2=getComputedStyle(pe2);"
+                 "if((pcs2.backgroundImage||'').indexOf('url(')>=0){overImg=true;break;}"
+                 "var ims=pe2.querySelectorAll?pe2.querySelectorAll('img,picture,video'):[];"
+                 "for(var qi=0;qi<ims.length;qi++){var ir=ims[qi].getBoundingClientRect();"
+                   "if(ir.width>=100&&ir.height>=100&&ir.left<tr.right&&ir.right>tr.left"
+                     "&&ir.top<tr.bottom&&ir.bottom>tr.top){overImg=true;break;}}"
+                 "if(overImg||lum(pcs2.backgroundColor)!==null)break;"
+                 "pe2=pe2.parentElement;}}catch(e){}"
              "if(overImg)continue;"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
@@ -736,55 +759,17 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
                  "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
              "}}catch(e){}"
-           // ROUND BUTTON SHAPES. Border ONLY the round element (a square
-           // container and the round pill share the copilot-compare class, which
-           // is why a CSS border produced two rings). copilot-compare -> border
-           // the oval, clear the square siblings; puis-heart-position -> make it
-           // the single dark circle, clear every inner box, keep the glyph img.
-           "var BRD='1px solid rgba(255,255,255,0.55)';"
-           "try{"
-             "var CMP=document.querySelectorAll('[class*=copilot-compare]');"
-             "for(var ci=0;ci<CMP.length&&ci<40;ci++){var el=CMP[ci];"
-               "var cs=getComputedStyle(el),r=el.getBoundingClientRect();"
-               "if(r.width<20||r.height<12)continue;"
-               "var rd=parseFloat(cs.borderTopLeftRadius)||0;"
-               "if(rd>=Math.min(r.width,r.height)*0.4){"
-                 "el.style.setProperty('background-color',BG,'important');"
-                 "el.style.setProperty('border',BRD,'important');"
-                 "el.style.setProperty('box-sizing','border-box','important');"
-                 // clear dark square wrappers around/above the pill (the box that
-                 // extends past the oval bounds).
-                 "var cb=el.parentElement,cd=0;"
-                 "while(cb&&cd++<7){var cbr=cb.getBoundingClientRect();"
-                   "if(cbr.width<220&&cbr.height<160){"
-                     "var cbc=getComputedStyle(cb),cbl=lum(cbc.backgroundColor);"
-                     "if((parseFloat(cbc.borderTopLeftRadius)||0)<8&&cbl!==null&&cbl<0.4){"
-                       "cb.style.setProperty('background-color','transparent','important');"
-                       "cb.style.setProperty('border','0','important');}}"
-                   "cb=cb.parentElement;}}"
-               "else{"
-                 "el.style.setProperty('background-color','transparent','important');"
-                 "el.style.setProperty('border','0','important');}}"
-             "var HB=document.querySelectorAll('[class*=puis-heart-position]');"
-             "for(var hi=0;hi<HB.length&&hi<40;hi++){var pos=HB[hi];"
-               "var pr=pos.getBoundingClientRect();if(pr.width<16||pr.width>60)continue;"
-               "pos.style.setProperty('background-color',BG,'important');"
-               "pos.style.setProperty('border-radius','50%','important');"
-               "pos.style.setProperty('overflow','hidden','important');"
-               "pos.style.setProperty('border',BRD,'important');"
-               "pos.style.setProperty('box-sizing','border-box','important');"
-               "var kids=pos.querySelectorAll('*');"
-               "for(var ki=0;ki<kids.length&&ki<40;ki++){var kd=kids[ki];"
-                 "if(kd.tagName&&kd.tagName.toLowerCase()==='img')continue;"
-                 "var kc=getComputedStyle(kd),kl=lum(kc.backgroundColor);"
-                 "if(kl!==null&&kl<0.5)kd.style.setProperty('background-color','transparent','important');"
-                 "kd.style.setProperty('border','0','important');}"
-               "var wb=pos.parentElement,wd=0;"
+           // Clear stray dark square wrappers around the buttons (the box that
+           // can extend past the pill). Shapes/borders are persistent CSS above.
+           "try{var RB=document.querySelectorAll('[class*=copilot-compare],[class*=puis-heart-position]');"
+             "for(var ri=0;ri<RB.length&&ri<60;ri++){var rbe=RB[ri];"
+               "var r0=rbe.getBoundingClientRect();if(r0.width<16)continue;"
+               "var wb=rbe.parentElement,wd=0;"
                "while(wb&&wd++<7){var wbr=wb.getBoundingClientRect();"
-                 "if(wbr.width>=pr.width&&wbr.width<150&&wbr.height<150){"
-                   "var wc=getComputedStyle(wb),wl=lum(wc.backgroundColor);"
-                   "if((parseFloat(wc.borderTopLeftRadius)||0)<8&&wl!==null&&wl<0.4)"
-                     "wb.style.setProperty('background-color','transparent','important');}"
+                 "if(wbr.width<230&&wbr.height<170){var wc=getComputedStyle(wb);"
+                   "if((parseFloat(wc.borderTopLeftRadius)||0)<12&&lum(wc.backgroundColor)!==null&&lum(wc.backgroundColor)<0.4){"
+                     "wb.style.setProperty('background-color','transparent','important');"
+                     "wb.style.setProperty('border','0','important');}}"
                  "wb=wb.parentElement;}}"
            "}catch(e){}"
            // One-shot probe. Two builds have now been spent inferring what paints
