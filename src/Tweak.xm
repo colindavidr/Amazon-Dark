@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.95.0"
+#define AD_VERSION "v5.96.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -438,11 +438,13 @@ static NSString *ADFixesLiteral(void){
              "[class*=lists-framework]:not(img),"
              "[class*=s-csa-instrument],[class*=s-csa-instrument] *"
              "{background-color:transparent !important;box-shadow:none !important;border:0 !important;}"
-             // Heart circle: dark fill, clip-path forces the round shape (Amazon
-             // overrides border-radius; it never sets clip-path).
+             // Heart circle: dark fill, masked to a circle. -webkit-mask clips the
+             // element (and glyph) to the circle regardless of any radius/clip
+             // override, which is why plain clip-path was not enough here.
              "[class*=lists-framework-action-button]"
-             "{background-color:#181a1b !important;clip-path:circle(50%) !important;"
-             "box-sizing:border-box !important;}"
+             "{background-color:#181a1b !important;box-sizing:border-box !important;"
+             "-webkit-mask-image:radial-gradient(circle,#000 0 49%,rgba(0,0,0,0) 50%) !important;"
+             "mask-image:radial-gradient(circle,#000 0 49%,rgba(0,0,0,0) 50%) !important;}"
              // Compare pill: dark fill, clipped to a pill; label forced light with
              // -webkit-text-fill-color (beats Dark Reader's inline colour).
              "[class*=copilot-compare]"
