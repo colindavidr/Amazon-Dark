@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.70.1"
+#define AD_VERSION "v5.71.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -530,7 +530,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
            // format argument through two call sites.
            "var BG='rgb(24,26,27)';try{var hb=getComputedStyle(document.documentElement).backgroundColor;"
              "var hl=lum(hb);if(hl!==null&&hl<0.25)BG=hb;}catch(e){}"
-           "var SKIP=/star|prime|logo|flag|swatch|thumb|sponsor|pill-image|product-image|photo|heart|wish|lists-framework/i;"           // Classes the probe confirmed are monochrome UI glyphs. These get a
+           "var SKIP=/star|prime|logo|flag|swatch|thumb|sponsor|pill-image|product-image|photo|heart|wish|lists-framework|avatar|profile|author|reviewer|byline|merchant|seller|brand|store|logo-|-logo|headshot|user-image|customer/i;"           // Classes the probe confirmed are monochrome UI glyphs. These get a
            // looser size cap, because the heart measures 33x33 against a 32 limit and
            // was failing by a single pixel, while sbs-pill-image at 34x34 is a product
            // thumbnail that must keep its colour.
@@ -597,8 +597,17 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "var ot=false;for(var z=0;z<el.childNodes.length;z++){var nz=el.childNodes[z];"
                  "if(nz.nodeType===3&&nz.nodeValue&&nz.nodeValue.trim()){ot=true;break;}}"
                "var lim=ICON.test(cn2)?40:36;"
-               "if(gr.width>5&&gr.width<=lim&&gr.height>5&&gr.height<=lim&&!SKIP.test(cn2)&&!ot&&bgOf(el)<=0.5){"
-                 "var isI=el.tagName.toLowerCase()==='img';"
+               "var inContent=false;try{inContent=!!(el.closest&&el.closest("
+                 "'[data-hook*=review],[class*=review],[class*=profile],[class*=avatar],"
+                 "[class*=author],[class*=byline],[class*=merchant],[class*=seller],"
+                 "[class*=brand],[class*=store],[id*=review]'));}catch(e){}"
+               // A real <img> carrying alt text is almost always content (an
+               // avatar's alt is the person's name, a logo's is the brand). Icon
+               // markup uses a nested a-icon-alt span, not the img's own alt, so
+               // this does not catch the glyphs we actually want.
+               "var isI=el.tagName.toLowerCase()==='img';"
+               "var hasAlt=isI&&el.getAttribute&&(el.getAttribute('alt')||'').trim().length>1;"
+               "if(gr.width>5&&gr.width<=lim&&gr.height>5&&gr.height<=lim&&!SKIP.test(cn2)&&!ot&&bgOf(el)<=0.5&&!inContent&&!hasAlt){"
                  "var hasB=cs.backgroundImage&&cs.backgroundImage!=='none';"
                  "if(isI||hasB){el.style.setProperty('filter','brightness(0) invert(1)','important');"
                    "el.__adGlyph=1;gfix++;}}"
