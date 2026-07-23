@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.108.0"
+#define AD_VERSION "v5.109.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -803,7 +803,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "var acs=getComputedStyle(ae),abi=acs.backgroundImage||acs.webkitMaskImage||acs.maskImage;"
                "if(!abi||abi==='none'||abi.indexOf('url(')<0)continue;"
                "var ar=ae.getBoundingClientRect();"
-               "if(ar.width>5&&ar.width<=44&&ar.height>5&&ar.height<=44){"
+               "if(ar.width>5&&ar.width<=60&&ar.height>5&&ar.height<=60){"
                  "ae.style.setProperty('filter','brightness(0) invert(1)','important');ae.__adGlyph=1;}}"
            "}catch(e){}"
            "try{var PRM=document.querySelectorAll('[class*=sub-header-title-font]');"
@@ -827,7 +827,6 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                  "mc.style.setProperty('background-image','none','important');"
                  "mc.style.setProperty('border-radius','0','important');"
                  "mc.style.setProperty('clip-path','none','important');"
-                 "mc.style.setProperty('overflow','hidden','important');"
                  "mc.style.setProperty('border','1.5px solid rgba(255,255,255,0.6)','important');"
                  "mc.style.setProperty('box-sizing','border-box','important');"
                  "mc.style.setProperty('box-shadow','none','important');}"
