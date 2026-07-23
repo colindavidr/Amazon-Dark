@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.92.0"
+#define AD_VERSION "v5.93.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -434,19 +434,20 @@ static NSString *ADFixesLiteral(void){
              // [class*=heart] darkening, which is what kept it a dark box).
              "[class*=puis-heart-position][class*=puis-heart-position][class*=puis-heart-position]"
              "{background-color:transparent !important;border:0 !important;}"
-             // Round element (Amazon already gives it rad=50) -> dark circle with
-             // a chrome ring. Doubled specificity so the fill/border stick.
-             "[class*=lists-framework-active][class*=lists-framework-active],"
-             "[class*=lists-framework-heart][class*=lists-framework-heart]"
+             // Round element is lists-framework-action-button -> dark circle with
+             // a chrome ring. Tripled specificity so fill/radius/border stick.
+             "[class*=lists-framework-action-button][class*=lists-framework-action-button][class*=lists-framework-action-button]"
              "{background-color:#181a1b !important;border-radius:50% !important;"
-             "box-sizing:border-box !important;"
+             "overflow:hidden !important;box-sizing:border-box !important;"
              "border:1px solid rgba(255,255,255,0.55) !important;}"
              // Compare -> every copilot-compare layer is pill-shaped and dark, so
-             // the square wrapper can never render as a box. One chrome ring.
+             // the square wrapper can never render as a box. One chrome ring, and
+             // its label forced light (it was dark-on-dark = invisible).
              "[class*=copilot-compare]"
              "{background-color:#181a1b !important;border-radius:999px !important;"
-             "box-sizing:border-box !important;"
+             "box-sizing:border-box !important;color:#e8e6e3 !important;"
              "border:1px solid rgba(255,255,255,0.55) !important;}"
+             "[class*=copilot-compare] *{color:#e8e6e3 !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
              // legible on first paint instead of after the repair catches up.
@@ -723,12 +724,18 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              // do not overlap and are still themed normally).
              "var overImg=false;"
              "try{var tr=el.getBoundingClientRect();var pe2=el,pd2=0;"
-               "while(pe2&&pd2++<6){var pcs2=getComputedStyle(pe2);"
+               "var ovl=function(ir){return ir.width>=100&&ir.height>=100"
+                 "&&ir.left<tr.right&&ir.right>tr.left&&ir.top<tr.bottom&&ir.bottom>tr.top;};"
+               "while(pe2&&pd2++<10){var pcs2=getComputedStyle(pe2);"
                  "if((pcs2.backgroundImage||'').indexOf('url(')>=0){overImg=true;break;}"
                  "var ims=pe2.querySelectorAll?pe2.querySelectorAll('img,picture,video'):[];"
-                 "for(var qi=0;qi<ims.length;qi++){var ir=ims[qi].getBoundingClientRect();"
-                   "if(ir.width>=100&&ir.height>=100&&ir.left<tr.right&&ir.right>tr.left"
-                     "&&ir.top<tr.bottom&&ir.bottom>tr.top){overImg=true;break;}}"
+                 "for(var qi=0;qi<ims.length;qi++){if(ovl(ims[qi].getBoundingClientRect())){overImg=true;break;}}"
+                 "if(overImg)break;"
+                 "var sib=pe2.previousElementSibling,sc=0;"
+                 "while(sib&&sc++<4){if(/^(img|picture|video)$/i.test(sib.tagName)&&ovl(sib.getBoundingClientRect())){overImg=true;break;}"
+                   "var si=sib.querySelectorAll?sib.querySelectorAll('img,picture,video'):[];"
+                   "for(var sj=0;sj<si.length;sj++){if(ovl(si[sj].getBoundingClientRect())){overImg=true;break;}}"
+                   "if(overImg)break;sib=sib.previousElementSibling;}"
                  "if(overImg||lum(pcs2.backgroundColor)!==null)break;"
                  "pe2=pe2.parentElement;}}catch(e){}"
              "if(overImg){if(lum(cs.color)!==null&&lum(cs.color)>0.5)"
