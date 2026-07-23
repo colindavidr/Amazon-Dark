@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.86.0"
+#define AD_VERSION "v5.87.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -917,7 +917,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
          // Re-run the repair as the page fills in (carousels, lazy tiles), debounced
          // so a busy DOM cannot turn this into a hot loop.
          "try{var _t=null;new MutationObserver(function(){clearTimeout(_t);"
-           "_t=setTimeout(function(){try{window.__AMZDARK_FIXCONTRAST__();}catch(e){}},150);})"
+           "_t=setTimeout(function(){try{window.__AMZDARK_FIXCONTRAST__();}catch(e){}},400);})"
            ".observe(document.documentElement,{childList:true,subtree:true});}catch(e){}"
          "window.__AMZDARK_APPLY__();"
          // Re-apply when the page is restored from the back-forward cache (returning
@@ -3419,11 +3419,11 @@ static void ADSweep(void){
 // are themed at assignment. So this timer is purely a launch-time backstop.
 static int gSweepTicks = 0;
 static void ADStartTimer(void){
-    if (gSweepTicks++ > 20) {           // ~40s, then done — events take over
+    if (gSweepTicks++ > 10) {           // ~30s, then done — events take over
         ADRaw("[AmazonDark] launch sweeps complete; event-driven from here");
         return;
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2.0*NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(3.0*NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{ ADSweep(); ADStartTimer(); });
 }
 
