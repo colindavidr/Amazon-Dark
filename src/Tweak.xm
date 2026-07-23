@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.109.0"
+#define AD_VERSION "v5.110.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -799,7 +799,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "for(var ai=0;ai<AIC.length&&ai<200;ai++){var ae=AIC[ai];"
                "if(ae.__adGlyph)continue;"
                "var acn=ae.className;if(acn&&acn.baseVal!==undefined)acn=acn.baseVal;acn=String(acn||'');"
-               "if(/star|prime|logo|flag|swatch|thumb|sponsor|product|photo|-alt/i.test(acn))continue;"
+               "if(/star|prime|logo|flag|swatch|thumb|sponsor|product|photo|-alt|toggle|switch|checkbox/i.test(acn))continue;"
                "var acs=getComputedStyle(ae),abi=acs.backgroundImage||acs.webkitMaskImage||acs.maskImage;"
                "if(!abi||abi==='none'||abi.indexOf('url(')<0)continue;"
                "var ar=ae.getBoundingClientRect();"
@@ -824,9 +824,9 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "var mrad=parseFloat(mcs.borderTopLeftRadius)||0;"
                "if(/on-image-button/i.test(mcl)||mrad>=Math.min(mr.width,mr.height)*0.4){"
                  "mc.style.setProperty('background-color',BG,'important');"
-                 "mc.style.setProperty('background-image','none','important');"
                  "mc.style.setProperty('border-radius','0','important');"
-                 "mc.style.setProperty('clip-path','none','important');"
+                 "mc.style.setProperty('overflow','hidden','important');"
+                 "mc.style.setProperty('clip-path','inset(0)','important');"
                  "mc.style.setProperty('border','1.5px solid rgba(255,255,255,0.6)','important');"
                  "mc.style.setProperty('box-sizing','border-box','important');"
                  "mc.style.setProperty('box-shadow','none','important');}"
