@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.88.0"
+#define AD_VERSION "v5.89.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -702,46 +702,6 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "var fl=lum(cs.color);if(fl===null)continue;"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
-           // ROUND BUTTON SHAPES. Border ONLY the round element (a square
-           // container and the round pill share the copilot-compare class, which
-           // is why a CSS border produced two rings). copilot-compare -> border
-           // the oval, clear the square siblings; puis-heart-position -> make it
-           // the single dark circle, clear every inner box, keep the glyph img.
-           "var BRD='1px solid rgba(255,255,255,0.55)';"
-           "try{"
-             "var CMP=document.querySelectorAll('[class*=copilot-compare]');"
-             "for(var ci=0;ci<CMP.length&&ci<40;ci++){var el=CMP[ci];"
-               "var cs=getComputedStyle(el),r=el.getBoundingClientRect();"
-               "if(r.width<20||r.height<12)continue;"
-               "var rd=parseFloat(cs.borderTopLeftRadius)||0;"
-               "if(rd>=Math.min(r.width,r.height)*0.4){"
-                 "el.style.setProperty('background-color',BG,'important');"
-                 "el.style.setProperty('border',BRD,'important');"
-                 "el.style.setProperty('box-sizing','border-box','important');}"
-               "else{"
-                 "el.style.setProperty('background-color','transparent','important');"
-                 "el.style.setProperty('border','0','important');}}"
-             "var HB=document.querySelectorAll('[class*=puis-heart-position]');"
-             "for(var hi=0;hi<HB.length&&hi<40;hi++){var pos=HB[hi];"
-               "var pr=pos.getBoundingClientRect();if(pr.width<16||pr.width>60)continue;"
-               "pos.style.setProperty('background-color',BG,'important');"
-               "pos.style.setProperty('border-radius','50%','important');"
-               "pos.style.setProperty('border',BRD,'important');"
-               "pos.style.setProperty('box-sizing','border-box','important');"
-               "var kids=pos.querySelectorAll('*');"
-               "for(var ki=0;ki<kids.length&&ki<40;ki++){var kd=kids[ki];"
-                 "if(kd.tagName&&kd.tagName.toLowerCase()==='img')continue;"
-                 "var kc=getComputedStyle(kd),kl=lum(kc.backgroundColor);"
-                 "if(kl!==null&&kl<0.5)kd.style.setProperty('background-color','transparent','important');"
-                 "kd.style.setProperty('border','0','important');}"
-               "var wb=pos.parentElement,wd=0;"
-               "while(wb&&wd++<7){var wbr=wb.getBoundingClientRect();"
-                 "if(wbr.width>=pr.width&&wbr.width<150&&wbr.height<150){"
-                   "var wc=getComputedStyle(wb),wl=lum(wc.backgroundColor);"
-                   "if((parseFloat(wc.borderTopLeftRadius)||0)<8&&wl!==null&&wl<0.4)"
-                     "wb.style.setProperty('background-color','transparent','important');}"
-                 "wb=wb.parentElement;}}"
-           "}catch(e){}"
            // HEARTS. Two parts, kept separate so they cannot fight: darken the circle
            // (a light background on the element or a near ancestor) and lighten the
            // glyph by whatever actually draws it. Doing this by mechanism avoids the
@@ -768,6 +728,56 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
                  "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
              "}}catch(e){}"
+           // ROUND BUTTON SHAPES. Border ONLY the round element (a square
+           // container and the round pill share the copilot-compare class, which
+           // is why a CSS border produced two rings). copilot-compare -> border
+           // the oval, clear the square siblings; puis-heart-position -> make it
+           // the single dark circle, clear every inner box, keep the glyph img.
+           "var BRD='1px solid rgba(255,255,255,0.55)';"
+           "try{"
+             "var CMP=document.querySelectorAll('[class*=copilot-compare]');"
+             "for(var ci=0;ci<CMP.length&&ci<40;ci++){var el=CMP[ci];"
+               "var cs=getComputedStyle(el),r=el.getBoundingClientRect();"
+               "if(r.width<20||r.height<12)continue;"
+               "var rd=parseFloat(cs.borderTopLeftRadius)||0;"
+               "if(rd>=Math.min(r.width,r.height)*0.4){"
+                 "el.style.setProperty('background-color',BG,'important');"
+                 "el.style.setProperty('border',BRD,'important');"
+                 "el.style.setProperty('box-sizing','border-box','important');"
+                 // clear dark square wrappers around/above the pill (the box that
+                 // extends past the oval bounds).
+                 "var cb=el.parentElement,cd=0;"
+                 "while(cb&&cd++<7){var cbr=cb.getBoundingClientRect();"
+                   "if(cbr.width<220&&cbr.height<160){"
+                     "var cbc=getComputedStyle(cb),cbl=lum(cbc.backgroundColor);"
+                     "if((parseFloat(cbc.borderTopLeftRadius)||0)<8&&cbl!==null&&cbl<0.4){"
+                       "cb.style.setProperty('background-color','transparent','important');"
+                       "cb.style.setProperty('border','0','important');}}"
+                   "cb=cb.parentElement;}}"
+               "else{"
+                 "el.style.setProperty('background-color','transparent','important');"
+                 "el.style.setProperty('border','0','important');}}"
+             "var HB=document.querySelectorAll('[class*=puis-heart-position]');"
+             "for(var hi=0;hi<HB.length&&hi<40;hi++){var pos=HB[hi];"
+               "var pr=pos.getBoundingClientRect();if(pr.width<16||pr.width>60)continue;"
+               "pos.style.setProperty('background-color',BG,'important');"
+               "pos.style.setProperty('border-radius','50%','important');"
+               "pos.style.setProperty('border',BRD,'important');"
+               "pos.style.setProperty('box-sizing','border-box','important');"
+               "var kids=pos.querySelectorAll('*');"
+               "for(var ki=0;ki<kids.length&&ki<40;ki++){var kd=kids[ki];"
+                 "if(kd.tagName&&kd.tagName.toLowerCase()==='img')continue;"
+                 "var kc=getComputedStyle(kd),kl=lum(kc.backgroundColor);"
+                 "if(kl!==null&&kl<0.5)kd.style.setProperty('background-color','transparent','important');"
+                 "kd.style.setProperty('border','0','important');}"
+               "var wb=pos.parentElement,wd=0;"
+               "while(wb&&wd++<7){var wbr=wb.getBoundingClientRect();"
+                 "if(wbr.width>=pr.width&&wbr.width<150&&wbr.height<150){"
+                   "var wc=getComputedStyle(wb),wl=lum(wc.backgroundColor);"
+                   "if((parseFloat(wc.borderTopLeftRadius)||0)<8&&wl!==null&&wl<0.4)"
+                     "wb.style.setProperty('background-color','transparent','important');}"
+                 "wb=wb.parentElement;}}"
+           "}catch(e){}"
            // One-shot probe. Two builds have now been spent inferring what paints
            // these glyphs from what does NOT move. Cheaper to just ask the DOM: report
            // the first few icon-sized elements and which mechanism draws each, so the
@@ -917,7 +927,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
          // Re-run the repair as the page fills in (carousels, lazy tiles), debounced
          // so a busy DOM cannot turn this into a hot loop.
          "try{var _t=null;new MutationObserver(function(){clearTimeout(_t);"
-           "_t=setTimeout(function(){try{window.__AMZDARK_FIXCONTRAST__();}catch(e){}},400);})"
+           "_t=setTimeout(function(){try{window.__AMZDARK_FIXCONTRAST__();}catch(e){}},150);})"
            ".observe(document.documentElement,{childList:true,subtree:true});}catch(e){}"
          "window.__AMZDARK_APPLY__();"
          // Re-apply when the page is restored from the back-forward cache (returning
@@ -3419,11 +3429,11 @@ static void ADSweep(void){
 // are themed at assignment. So this timer is purely a launch-time backstop.
 static int gSweepTicks = 0;
 static void ADStartTimer(void){
-    if (gSweepTicks++ > 10) {           // ~30s, then done — events take over
+    if (gSweepTicks++ > 20) {           // ~40s, then done — events take over
         ADRaw("[AmazonDark] launch sweeps complete; event-driven from here");
         return;
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(3.0*NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2.0*NSEC_PER_SEC)),
         dispatch_get_main_queue(), ^{ ADSweep(); ADStartTimer(); });
 }
 

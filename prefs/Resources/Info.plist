@@ -7,8 +7,8 @@
     <key>CFBundleIdentifier</key><string>com.colindavidr.amazondark.prefs</string>
     <key>CFBundleName</key><string>ADPrefs</string>
     <key>CFBundlePackageType</key><string>BNDL</string>
-    <key>CFBundleShortVersionString</key><string>5.88.0</string>
-    <key>CFBundleVersion</key><string>5.88.0</string>
+    <key>CFBundleShortVersionString</key><string>5.89.0</string>
+    <key>CFBundleVersion</key><string>5.89.0</string>
     <key>MinimumOSVersion</key><string>13.0</string>
     <key>NSPrincipalClass</key><string>ADRootListController</string>
 </dict>
