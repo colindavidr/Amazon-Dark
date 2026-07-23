@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.102.0"
+#define AD_VERSION "v5.103.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -790,6 +790,16 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "}}catch(e){}"
            // Clear stray dark square wrappers around the buttons (the box that
            // can extend past the pill). Shapes/borders are persistent CSS above.
+           "try{var PRM=document.querySelectorAll('[class*=sub-header-title-font]');"
+             "for(var pi=0;pi<PRM.length&&pi<40;pi++){var pt=PRM[pi];"
+               "pt.style.setProperty('color','#0f1111','important');"
+               "pt.style.setProperty('-webkit-text-fill-color','#0f1111','important');"
+               // clear dark background boxes on the header ancestors
+               "var pa=pt,pd=0;"
+               "while(pa&&pd++<5){var pac=getComputedStyle(pa),pal=lum(pac.backgroundColor);"
+                 "if(pal!==null&&pal<0.3)pa.style.setProperty('background-color','transparent','important');"
+                 "pa=pa.parentElement;}}"
+           "}catch(e){}"
            "try{var CM2=document.querySelectorAll('[class*=copilot-compare]');"
              "for(var mi=0;mi<CM2.length&&mi<40;mi++){var mc=CM2[mi];"
                "var mcs=getComputedStyle(mc),mr=mc.getBoundingClientRect();"
@@ -937,7 +947,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                  "for(var z=0;z<q.length;z++){var rr=q[z].getBoundingClientRect();"
                    "if(rr.width>20&&rr.height>20)return q[z];}return null;};"
                "var dumpBtn=function(el,tag){if(!el)return '';var top=el,up=0;"
-                 "while(top.parentElement&&up++<2)top=top.parentElement;"
+                 "while(top.parentElement&&up++<6)top=top.parentElement;"
                  "var stk=[top],out=[],gd=0;"
                  "while(stk.length&&out.length<14&&gd++<120){var nd=stk.shift();"
                    "var cs=getComputedStyle(nd),rc=nd.getBoundingClientRect();"
