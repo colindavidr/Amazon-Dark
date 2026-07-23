@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.81.0"
+#define AD_VERSION "v5.82.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -937,6 +937,30 @@ static NSString *ADDarkReaderReapply(void){
 
 static void ADBootstrapDarkReaderIn(WKWebView *wv);
 static const void *kADBootedKey = &kADBootedKey;
+static const void *kADUSKey = &kADUSKey;
+static int gLoadLog = 12;
+// Add our documentStart engine user-script to a webview's config if it is not
+// already there. Called from the load hooks so it lands BEFORE the navigation
+// -- the only timing that reaches loadHTMLString/loadData content and child
+// frames. Safe to call repeatedly (guarded per webview).
+static void ADEnsureUserScript(WKWebView *wv){
+    @try {
+        if (!gP.enabled || !gP.webDarkReader || !wv) return;
+        if (objc_getAssociatedObject(wv, kADUSKey)) return;
+        NSString *js = ADDarkReaderBootstrap();
+        Class WKUS = NSClassFromString(@"WKUserScript");
+        WKUserContentController *ucc = wv.configuration.userContentController;
+        if (js.length && WKUS && ucc){
+            WKUserScript *us = [[WKUS alloc] initWithSource:js
+                                              injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                           forMainFrameOnly:NO];
+            [ucc addUserScript:us];
+            objc_setAssociatedObject(wv, kADUSKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (gLoadLog > 0){ gLoadLog--;
+                ADLog(@"loadhook: injected userscript into %s", object_getClassName(wv)); }
+        }
+    } @catch(...) {}
+}
 static void ADEnableDarkReaderIn(WKWebView *wv){
     if (!gP.enabled || !gP.webDarkReader || !wv) return;
     @try {
@@ -1258,6 +1282,19 @@ static void ADPreDarken(WKWebView *wv){
 }
 
 %hook WKWebView
+- (WKNavigation *)loadHTMLString:(NSString *)string baseURL:(NSURL *)baseURL {
+    @try { if (gLoadLog > 0){ gLoadLog--; ADLog(@"loadhook: loadHTMLString on %s len=%lu",
+              object_getClassName(self), (unsigned long)string.length); } ADEnsureUserScript(self); } @catch(...) {}
+    return %orig;
+}
+- (WKNavigation *)loadData:(NSData *)data MIMEType:(NSString *)MIMEType characterEncodingName:(NSString *)enc baseURL:(NSURL *)baseURL {
+    @try { ADEnsureUserScript(self); } @catch(...) {}
+    return %orig;
+}
+- (WKNavigation *)loadRequest:(NSURLRequest *)request {
+    @try { ADEnsureUserScript(self); } @catch(...) {}
+    return %orig;
+}
 - (id)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)cfg {
     @try {
         ADEnsurePrefs();
