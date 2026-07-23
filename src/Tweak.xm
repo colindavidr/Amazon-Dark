@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.76.0"
+#define AD_VERSION "v5.77.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -912,6 +912,8 @@ static NSString *ADDarkReaderReapply(void){
         ADThemeLiteral(), ADFixesLiteral()];
 }
 
+static void ADBootstrapDarkReaderIn(WKWebView *wv);
+static const void *kADBootedKey = &kADBootedKey;
 static void ADEnableDarkReaderIn(WKWebView *wv){
     if (!gP.enabled || !gP.webDarkReader || !wv) return;
     @try {
@@ -922,6 +924,16 @@ static void ADEnableDarkReaderIn(WKWebView *wv){
                 @try {
                     if (![r isKindOfClass:[NSString class]]) return;
                     NSString *res = (NSString *)r;
+                    // Engine absent (SMASH / store-mode webviews created off the
+                    // path our documentStart userscript covers). Inject it now and
+                    // re-apply shortly after so the page themes without a reload.
+                    if ([res isEqualToString:@"noDR"] &&
+                        !objc_getAssociatedObject(wv, kADBootedKey)){
+                        objc_setAssociatedObject(wv, kADBootedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                        ADBootstrapDarkReaderIn(wv);
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250*1000000LL),
+                            dispatch_get_main_queue(), ^{ @try { ADEnableDarkReaderIn(wv); } @catch(...) {} });
+                    }
                     // 'n/bfix' = text colours lifted / blend modes neutralised.
                     // 'nofix'  = the repair function is not defined in this document.
                     // Deduped per URL+result so a settled page cannot spam the log.
