@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.78.0"
+#define AD_VERSION "v5.79.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -1137,9 +1137,30 @@ static void ADBootstrapDarkReaderIn(WKWebView *wv){
 }
 
 static int gWebSeen = 0;
+static void ADBootstrapDarkReaderIn(WKWebView *wv);
 static void ADWalkWebViews(UIView *v){
     @try {
-        if ([v isKindOfClass:[WKWebView class]]){ gWebSeen++; ADEnableDarkReaderIn((WKWebView *)v); }
+        if ([v isKindOfClass:[WKWebView class]]){
+            gWebSeen++;
+            WKWebView *wv = (WKWebView *)v;
+            @try {
+                static NSMutableSet *seenWV = nil;
+                if (!seenWV) seenWV = [NSMutableSet set];
+                NSString *u = wv.URL.absoluteString ?: @"(no url)";
+                NSString *key = [NSString stringWithFormat:@"%s|%@", object_getClassName(wv),
+                                 u.length > 70 ? [u substringToIndex:70] : u];
+                if (![seenWV containsObject:key]){
+                    [seenWV addObject:key];
+                    ADLog(@"WEBVIEW cls=%s url=%@", object_getClassName(wv), u);
+                    // Non-home webview: get the engine in right away.
+                    if ([u rangeOfString:@"mshop"].location == NSNotFound &&
+                        [u rangeOfString:@"cart"].location == NSNotFound){
+                        ADBootstrapDarkReaderIn(wv);
+                    }
+                }
+            } @catch(...) {}
+            ADEnableDarkReaderIn(wv);
+        }
         for (UIView *s in v.subviews) ADWalkWebViews(s);
     } @catch(...) {}
 }
