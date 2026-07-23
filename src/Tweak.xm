@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.96.0"
+#define AD_VERSION "v5.97.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -755,7 +755,12 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "for(var hz=0;hz<HRT.length;hz++){var he=HRT[hz];var hcs=getComputedStyle(he);"
                // circle: darken this element's light bg, and the first light ancestor bg
                "var hcl2=he.className;if(hcl2&&hcl2.baseVal!==undefined)hcl2=hcl2.baseVal;hcl2=String(hcl2||'');"
-               "if(/unfill|placehold|a-icon/i.test(hcl2)){he.style.setProperty('background-color','transparent','important');}"
+               "if(/action-button/i.test(hcl2)){"
+                 "he.style.setProperty('background-color',BG,'important');"
+                 "he.style.setProperty('-webkit-mask-image','radial-gradient(circle,#000 0 49%,rgba(0,0,0,0) 50%)','important');"
+                 "he.style.setProperty('mask-image','radial-gradient(circle,#000 0 49%,rgba(0,0,0,0) 50%)','important');}"
+               "else if(/heart-position/i.test(hcl2)){he.style.setProperty('background-color','transparent','important');}"
+               "else if(/unfill|placehold|a-icon/i.test(hcl2)){he.style.setProperty('background-color','transparent','important');}"
                "else if(lum(hcs.backgroundColor)>0.5){he.style.setProperty('background-color',BG,'important');}"
                "var pe=he.parentElement,pd=0;"
                "while(pe&&pd++<3){var pl=lum(getComputedStyle(pe).backgroundColor);"
@@ -779,10 +784,11 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "for(var ri=0;ri<RB.length&&ri<60;ri++){var rbe=RB[ri];"
                "var r0=rbe.getBoundingClientRect();if(r0.width<16)continue;"
                "var wb=rbe.parentElement,wd=0;"
-               "while(wb&&wd++<7){var wbr=wb.getBoundingClientRect();"
-                 "if(wbr.width<230&&wbr.height<170){var wc=getComputedStyle(wb);"
-                   "if((parseFloat(wc.borderTopLeftRadius)||0)<12&&lum(wc.backgroundColor)!==null&&lum(wc.backgroundColor)<0.4){"
+               "while(wb&&wd++<8){var wbr=wb.getBoundingClientRect();"
+                 "if(wbr.width<320&&wbr.height<220){var wc=getComputedStyle(wb);"
+                   "if((parseFloat(wc.borderTopLeftRadius)||0)<40&&lum(wc.backgroundColor)!==null&&lum(wc.backgroundColor)<0.4){"
                      "wb.style.setProperty('background-color','transparent','important');"
+                     "wb.style.setProperty('box-shadow','none','important');"
                      "wb.style.setProperty('border','0','important');}}"
                  "wb=wb.parentElement;}}"
            "}catch(e){}"
