@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.120.0"
+#define AD_VERSION "v5.121.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -332,38 +332,50 @@ static NSString *ADFixesLiteral(void){
              // with a documentStart CSS rule and it visibly worked; v5.28.0 removed it
              // because [class*=heart-position] dragged the 32px disc into the whitening
              // (the white blob). Every JS attempt since lost a timing race CSS cannot
-             // INVERTED VIEW OF THE STOCK WIDGET. The light-mode reference is a
-             // white disc with a dark glyph; the requested dark rendering is that
-             // exact view flipped as ONE unit. Two steps, both required:
-             //   1) pin the subtree to its stock light-mode colours, so Dark
-             //      Reader's stylesheet theming inside is undone (a DR-darkened
-             //      disc would invert back to LIGHT);
-             //   2) invert the outermost widget container once. The raster glyph
-             //      (dark in stock form) comes out light; hue-rotate keeps any
-             //      brand tint honest. Source pixels are never modified.
-             // Exactly one container per widget carries the filter -- nested
-             // inverts cancel pairwise.
-             "[class*=puis-heart-position] *,[class*=puis-heart-position],"
-             "[class*=copilot-compare] [class*=on-image-button],"
-             "[class*=copilot-compare] [class*=on-image-button] *,"
-             "[class*=copilot-compare][class*=on-image-button],"
-             "[class*=copilot-compare][class*=on-image-button] *"
-             "{color:#0f1111 !important;fill:#0f1111 !important;"
-             "-webkit-text-fill-color:#0f1111 !important;}"
-             "[class*=puis-heart-position] [class*=lists-framework-action-button],"
+             // DARK CIRCLE, CHROME RING, WHITE SYMBOL -- the specified target for
+             // both buttons, stated after the invert experiment: "circles with
+             // chrome borders and white symbols". The disc is styled on the BUTTON
+             // element across both card layouts (aria-label catches the grid
+             // compare variant whose class family differs); the wrapper span is
+             // explicitly flattened so nested matches cannot double-ring. Glyphs go
+             // white by silhouette; the loading placeholder is hidden outright
+             // because whitening a solid square asset produces a white box.
              "[class*=lists-framework-action-button],"
+             "[class*=copilot-compare][class*=on-image-button],"
              "[class*=copilot-compare] [class*=on-image-button],"
-             "[class*=copilot-compare][class*=on-image-button]"
-             "{background-color:#ffffff !important;}"
-             "[class*=puis-heart-position],"
-             "[class*=copilot-compare] [class*=on-image-button],"
-             "[class*=copilot-compare][class*=on-image-button]"
-             "{filter:invert(1) hue-rotate(180deg) !important;}"
-             // A compare disc nested inside an inverted heart wrapper would
-             // double-invert; they are siblings in practice, but keep the heart
-             // wrapper from ever matching the compare rule family.
-             "[class*=puis-heart-position] [class*=on-image-button]"
-             "{filter:none !important;}"
+             "[class*=s-product-image] button[aria-label*=ompare],"
+             "[class*=puisg-col] [role=button][aria-label*=ompare]"
+             "{background-color:#181a1b !important;border-radius:50%% !important;"
+             "border:1.5px solid rgba(255,255,255,0.65) !important;"
+             "box-shadow:none !important;box-sizing:border-box !important;}"
+             "[class*=puis-heart-position]"
+             "{background-color:transparent !important;border:0 !important;"
+             "box-shadow:none !important;}"
+             "[class*=lists-framework-action-button] img,"
+             "[class*=lists-framework-action-button] i,"
+             "[class*=lists-framework-action-button] svg,"
+             "[class*=lists-framework-unfill],[class*=lists-framework-fill],"
+             "[class*=copilot-compare] [class*=on-image-button] img,"
+             "[class*=copilot-compare] [class*=on-image-button] i,"
+             "[class*=copilot-compare] [class*=on-image-button] svg,"
+             "[class*=copilot-compare][class*=on-image-button] img,"
+             "[class*=copilot-compare][class*=on-image-button] i,"
+             "[class*=copilot-compare][class*=on-image-button] svg,"
+             "[class*=s-product-image] button[aria-label*=ompare] img,"
+             "[class*=s-product-image] button[aria-label*=ompare] i,"
+             "[class*=s-product-image] button[aria-label*=ompare] svg,"
+             "[class*=puisg-col] [role=button][aria-label*=ompare] img,"
+             "[class*=puisg-col] [role=button][aria-label*=ompare] i,"
+             "[class*=puisg-col] [role=button][aria-label*=ompare] svg"
+             "{filter:brightness(0) invert(1) !important;"
+             "background-color:transparent !important;}"
+             "[class*=puis-heart-position] [class*=placehold],[class*=heart-placeholder]"
+             "{display:none !important;}"
+             "[class*=lists-framework-action-button],"
+             "[class*=lists-framework-action-button] *,"
+             "[class*=copilot-compare] [class*=on-image-button] *,"
+             "[class*=copilot-compare][class*=on-image-button] *"
+             "{color:#ffffff !important;fill:#ffffff !important;}"
 
              // Home shortcut strips (Haul / Prime Video / Grocery...): brand
              // artwork sits on LIGHT pills, where the dark image backdrop reads
@@ -1464,6 +1476,41 @@ static void ADPreDarken(WKWebView *wv){
             objc_setAssociatedObject(self, kUS, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         ADBootstrapDarkReaderIn(self); // engine into the already-rendered document (idempotent)
+
+        // Census + repair for LATE webviews. One-shot per instance: name it, ping
+        // it (surfacing any injection error), and run the repair pass a few times
+        // on a private schedule -- the global burst timer is long dead by the time
+        // surfaces like Pharmacy are opened, which is exactly why they stayed
+        // light and silent through every previous probe.
+        static const void *kADAttachOnce = &kADAttachOnce;
+        if (!objc_getAssociatedObject(self, kADAttachOnce)){
+            objc_setAssociatedObject(self, kADAttachOnce, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NSString *au = self.URL.absoluteString ?: @"(no url yet)";
+            if (au.length > 70) au = [au substringToIndex:70];
+            ADLog(@"wvattach cls=%s url=%@ t=%.1f", object_getClassName(self), au, ADUptime());
+            __weak WKWebView *weakWv = self;
+            for (NSNumber *delay in @[@0.8, @2.0, @4.5]){
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                               (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    @try {
+                        WKWebView *wv2 = weakWv;
+                        if (!wv2 || !wv2.window) return;
+                        NSString *u3 = wv2.URL.absoluteString ?: @"(no url)";
+                        if (u3.length > 60) u3 = [u3 substringToIndex:60];
+                        [wv2 evaluateJavaScript:ADDarkReaderReapply()
+                              completionHandler:^(id r4, NSError *e4){
+                            @try {
+                                if (e4) ADLog(@"wvrepair %@ -> ERR %@/%ld",
+                                              u3, e4.domain, (long)e4.code);
+                                else if ([r4 isKindOfClass:[NSString class]])
+                                          ADLog(@"wvrepair %@ -> %@", u3, r4);
+                            } @catch(...) {}
+                        }];
+                    } @catch(...) {}
+                });
+            }
+        }
     } @catch(...) {}
 }
 - (void)webView:(WKWebView *)wv didFinishNavigation:(id)nav {
@@ -3446,11 +3493,28 @@ static BOOL ADImageMostlyLight(UIImage *img){
 }
 static int gSplashDumpLeft = 10;
 static int gSplashFixLeft  = 6;
+static int gSplashPillLeft = 4;
 static void ADLaunchWhiteGuard(UIView *v){
     @try {
         if (!gP.enabled || ADUptime() > 12.0) return;
         CGRect sb = [UIScreen mainScreen].bounds;
         CGFloat w = v.bounds.size.width, h = v.bounds.size.height;
+        // The launch storyboard's decorative search-bar outline: a short, wide,
+        // rounded/bordered pill near the top. On the dark launch frame it reads as
+        // a stray border (reported as a "dynamic island border"). Hide it -- it is
+        // decoration on a screen that exists for under a second.
+        if (h >= 36 && h <= 96 && w >= sb.size.width*0.55 && w < sb.size.width*0.98 &&
+            (v.layer.cornerRadius >= 12.0 || v.layer.borderWidth > 0.4)){
+            if (gSplashPillLeft > 0){
+                gSplashPillLeft--;
+                ADLog(@"splashpill hid cls=%s %.0fx%.0f r=%.0f bw=%.1f",
+                      object_getClassName(v), w, h,
+                      (double)v.layer.cornerRadius, (double)v.layer.borderWidth);
+            }
+            v.layer.borderWidth = 0;
+            v.hidden = YES;
+            return;
+        }
         if (w < sb.size.width*0.6 || h < sb.size.height*0.5) return;
         BOOL isIv = [v isKindOfClass:[UIImageView class]];
         UIImage *im = isIv ? ((UIImageView *)v).image : nil;
