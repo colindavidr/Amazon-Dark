@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.118.0"
+#define AD_VERSION "v5.119.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -332,20 +332,38 @@ static NSString *ADFixesLiteral(void){
              // with a documentStart CSS rule and it visibly worked; v5.28.0 removed it
              // because [class*=heart-position] dragged the 32px disc into the whitening
              // (the white blob). Every JS attempt since lost a timing race CSS cannot
-             // LEAVE THE ARTWORK ALONE, INVERT IT. One rule replaces the whole
-             // reconstruction era (silhouettes, homemade disc, homemade pill,
-             // clean-slate). Higher specificity than the blanket img/svg
-             // filter:none, so it wins without :not() gymnastics. Dark Reader
-             // themes the CSS colours (disc, pill, label) natively; the raster
-             // artwork it cannot recolor is simply rendered inverted --
-             // hue-rotate keeps any brand tint. Pixels are never modified.
-             "[class*=heart] img,[class*=wish] img,[class*=lists-framework] img,"
-             "[class*=heart] svg,[class*=wish] svg,[class*=lists-framework] svg,"
-             "[class*=heart] i,[class*=wish] i,[class*=lists-framework] i,"
-             "[class*=heart-placeholder],[class*=lists-framework-unfill],"
-             "[class*=copilot-compare] img,[class*=copilot-compare] svg,"
-             "[class*=copilot-compare] i,[class*=copilot-compare] [class*=a-icon]"
+             // INVERTED VIEW OF THE STOCK WIDGET. The light-mode reference is a
+             // white disc with a dark glyph; the requested dark rendering is that
+             // exact view flipped as ONE unit. Two steps, both required:
+             //   1) pin the subtree to its stock light-mode colours, so Dark
+             //      Reader's stylesheet theming inside is undone (a DR-darkened
+             //      disc would invert back to LIGHT);
+             //   2) invert the outermost widget container once. The raster glyph
+             //      (dark in stock form) comes out light; hue-rotate keeps any
+             //      brand tint honest. Source pixels are never modified.
+             // Exactly one container per widget carries the filter -- nested
+             // inverts cancel pairwise.
+             "[class*=puis-heart-position] *,[class*=puis-heart-position],"
+             "[class*=copilot-compare] [class*=on-image-button],"
+             "[class*=copilot-compare] [class*=on-image-button] *,"
+             "[class*=copilot-compare][class*=on-image-button],"
+             "[class*=copilot-compare][class*=on-image-button] *"
+             "{color:#0f1111 !important;fill:#0f1111 !important;"
+             "-webkit-text-fill-color:#0f1111 !important;}"
+             "[class*=puis-heart-position] [class*=lists-framework-action-button],"
+             "[class*=lists-framework-action-button],"
+             "[class*=copilot-compare] [class*=on-image-button],"
+             "[class*=copilot-compare][class*=on-image-button]"
+             "{background-color:#ffffff !important;}"
+             "[class*=puis-heart-position],"
+             "[class*=copilot-compare] [class*=on-image-button],"
+             "[class*=copilot-compare][class*=on-image-button]"
              "{filter:invert(1) hue-rotate(180deg) !important;}"
+             // A compare disc nested inside an inverted heart wrapper would
+             // double-invert; they are siblings in practice, but keep the heart
+             // wrapper from ever matching the compare rule family.
+             "[class*=puis-heart-position] [class*=on-image-button]"
+             "{filter:none !important;}"
 
              // Home shortcut strips (Haul / Prime Video / Grocery...): brand
              // artwork sits on LIGHT pills, where the dark image backdrop reads
@@ -405,7 +423,10 @@ static NSString *ADFixesLiteral(void){
              "[style*=multiply],[style*=darken],[style*=color-burn],"
              "[class*=deal] [style*=blend],[class*=Deal] [style*=blend]"
              "{mix-blend-mode:normal !important;isolation:auto !important;}"
-             "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}",
+             "',invert:[],ignoreInlineStyle:['[class*=puis-heart-position]','[class*=puis-heart-position] *',"
+             "'[class*=lists-framework-action-button]','[class*=lists-framework-action-button] *',"
+             "'[class*=copilot-compare]','[class*=copilot-compare] *'],"
+             "ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}",
             imgBackdrop];
 }
 
