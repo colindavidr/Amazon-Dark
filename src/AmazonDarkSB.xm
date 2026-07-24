@@ -19,12 +19,13 @@
 //   - only ever triggered by a scene whose bundle id is exactly Amazon.
 
 #import <UIKit/UIKit.h>
+#import <notify.h>
 #import <objc/runtime.h>
 
 static NSString * const kAMZ      = @"com.amazon.Amazon";
 static NSString * const kDefaults = @"com.colindavidr.amazondark";
 static const NSTimeInterval kCoverHold    = 3.0;  // dark cover visible time
-static const NSTimeInterval kCoverFade    = 0.40; // lift animation
+static const NSTimeInterval kCoverFade    = 0.30; // lift animation
 static const NSTimeInterval kCoverHardCap = 6.0;  // absolute max on screen
 static const NSTimeInterval kReCoverGap   = 8.0;  // ignore re-triggers within
 
@@ -37,6 +38,7 @@ static const NSTimeInterval kReCoverGap   = 8.0;  // ignore re-triggers within
 @end
 
 static UIWindow *gCoverWin;
+static double gPresentAt;
 static NSTimeInterval gLastPresent;
 
 static void ADSBLog(NSString *msg) {
@@ -206,6 +208,7 @@ static void ADPresentCover(void) {
             [UIView animateWithDuration:0.20 animations:^{ lg.alpha = 1.0; }];
         }
                 gCoverWin = w;
+        gPresentAt = CFAbsoluteTimeGetCurrent();
         ADSBLog(@"COVER presented (settle)");
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCoverHold * NSEC_PER_SEC)),
@@ -244,6 +247,24 @@ static void ADPresentCover(void) {
 %end
 
 %ctor {
+    // Event-driven dismissal, matching the system: the launch screen leaves at
+    // the app's first frame, not on a timer. The app posts this once its UI is
+    // up; the kCoverHold timer stays only as a fallback for a launch where the
+    // signal never arrives.
+    @try {
+        static int adReadyToken = 0;
+        notify_register_dispatch("com.colindavidr.amazondark.ready", &adReadyToken,
+                                 dispatch_get_main_queue(), ^(int t){
+            @try {
+                if (!gCoverWin) return;
+                double shown = CFAbsoluteTimeGetCurrent() - gPresentAt;
+                double wait  = shown < 0.50 ? (0.50 - shown) : 0.0;  // no strobe
+                ADSBLog([NSString stringWithFormat:@"COVER ready (shown %.2fs, wait %.2fs)", shown, wait]);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{ ADDismissCover(); });
+            } @catch (__unused NSException *e) {}
+        });
+    } @catch (__unused NSException *e) {}
     @autoreleasepool {
         @try { %init; ADSBLog(@"AmazonDarkSB ctor"); }
         @catch (__unused NSException *e) {}

@@ -62,13 +62,14 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <string.h>
+#import <notify.h>
 #import <stdio.h>
 #import <unistd.h>
 #import <fcntl.h>
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.127.0"
+#define AD_VERSION "v5.128.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -1555,6 +1556,20 @@ static void ADInjectAllWebViews(void){
 %end
 
 static inline double ADUptime(void);
+
+// ── app-ready signal ────────────────────────────────────────────────────────
+// Stock iOS keeps the launch screen up only until the app's FIRST FRAME, then
+// drops it -- no timer. The SpringBoard cover now mirrors that: this posts a
+// Darwin notification once per launch when the UI is demonstrably up (first
+// webview attach, or activation as fallback), and the cover dismisses on
+// receipt instead of waiting out a fixed 3s hold.
+static void ADPostAppReady(void){
+    static BOOL posted = NO;
+    if (posted) return;
+    posted = YES;
+    notify_post("com.colindavidr.amazondark.ready");
+    ADLog(@"appready posted t=%.1f", ADUptime());
+}
 static int gWkLogLeft = 6;
 // A one-line dark floor evaluated into whatever document currently exists --
 // no Dark Reader needed. If the engine is already there this is a no-op; if
@@ -1641,6 +1656,9 @@ static void ADPreDarken(WKWebView *wv){
             NSString *au = self.URL.absoluteString ?: @"(no url yet)";
             if (au.length > 70) au = [au substringToIndex:70];
             ADLog(@"wvattach cls=%s url=%@ t=%.1f", object_getClassName(self), au, ADUptime());
+            // First UI surface on screen: the primary ready trigger.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ ADPostAppReady(); });
             __weak WKWebView *weakWv = self;
             // Delegate-independent late coverage: watch the URL itself. Prewarmed
             // views (AMIConfigurableWebView) sit blank for minutes, then navigate
@@ -3867,8 +3885,26 @@ static void ADReapplyBurst(void){
             if (!vcSeen) vcSeen = [NSMutableSet set];
             if (![vcSeen containsObject:vcKey]){
                 [vcSeen addObject:vcKey];
-                ADLog(@"screen: %@", vcKey);
+                ADLog(@"screen: %@ modal=%d", vcKey,
+                      self.presentingViewController ? 1 : 0);
             }
+            // Presented sheets that are SwiftUI-hosted or pharmacy/health-named:
+            // flip the trait to dark. If that surface honours system appearance
+            // (SwiftUI does by default), Amazon's OWN dark palette takes over --
+            // which no amount of external repainting has managed to reach.
+            @try {
+                const char *cn3 = object_getClassName(self);
+                BOOL sheet = (self.presentingViewController != nil);
+                BOOL hostish = (strstr(cn3, "Hosting") != NULL ||
+                                strcasestr(cn3, "harm") != NULL ||
+                                strcasestr(cn3, "ealth") != NULL);
+                if (sheet && hostish &&
+                    [self respondsToSelector:@selector(setOverrideUserInterfaceStyle:)] &&
+                    self.overrideUserInterfaceStyle != UIUserInterfaceStyleDark){
+                    self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+                    ADLog(@"traitdark: %s", cn3);
+                }
+            } @catch(...) {}
             gProbeArmed = YES;
             @try {
                 if (gP.enabled){
@@ -3950,6 +3986,17 @@ static void ADAppForegrounded(CFNotificationCenterRef center, void *observer,
     if (strcmp(__progname, "Amazon") != 0) return;   // belt (plist filter is the braces)
     ADOpenLog();
     ADRaw("[AmazonDark] " AD_VERSION " init (DarkReader web + native colour engine)");
+    // Activation fallback for the ready signal: if no webview attaches (native-
+    // only cold path), the cover still lifts shortly after the app is active.
+    @try {
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationDidBecomeActiveNotification
+                        object:nil queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *n){
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ ADPostAppReady(); });
+        }];
+    } @catch(...) {}
     %init;
     ADRaw("[AmazonDark] hooks registered");
     {
