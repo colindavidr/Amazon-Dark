@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.124.0"
+#define AD_VERSION "v5.125.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -353,6 +353,15 @@ static NSString *ADFixesLiteral(void){
              "[class*=puis-heart-position]"
              "{background-color:transparent !important;border:0 !important;"
              "box-shadow:none !important;}"
+             "[class*=mlt-icon-container]"
+             "{background-color:#181a1b !important;border-radius:50%% !important;"
+             "border:1.5px solid rgba(255,255,255,0.65) !important;"
+             "box-shadow:none !important;box-sizing:border-box !important;}"
+             "[class*=mlt-icon-container] img,[class*=mlt-image-icon] img"
+             "{filter:brightness(0) invert(1) !important;"
+             "background-color:transparent !important;}"
+             "[class*=mlt-icon-container] *,[class*=mlt-text-icon]"
+             "{color:#ffffff !important;fill:#ffffff !important;}"
              "[class*=lists-framework-action-button] img,"
              "[class*=lists-framework-action-button] i,"
              "[class*=lists-framework-action-button] svg,"
@@ -747,26 +756,42 @@ static NSString *ADDarkReaderBootstrapBuild(void){
 
            // Clear stray dark square wrappers around the buttons (the box that
            // can extend past the pill). Shapes/borders are persistent CSS above.
-           // FILTER ICON AUDIT. One-shot: report the first filter-panel pictogram
-           // the whitener REFUSED and why, so a residual dark icon arrives in the
-           // log as a named target instead of another screenshot round.
-           "try{if(!window.__AD_FLTSCAN__){"
-             "var FQ=document.querySelectorAll("
-               "'[class*=filter] img,[class*=refinement] img,[class*=facet] img,"
-               "[class*=filter] svg,[class*=refinement] svg,[class*=facet] svg');"
-             "for(var ff=0;ff<FQ.length&&ff<120;ff++){var fe=FQ[ff];"
-               "if(fe.__adGlyph)continue;"
-               "var fr2=fe.getBoundingClientRect();"
-               "if(fr2.width<8||fr2.width>90||fr2.height<8||fr2.height>90)continue;"
-               "var fcs=getComputedStyle(fe);"
-               "if(String(fcs.filter||'').indexOf('invert')>=0)continue;"
-               "if(fe.tagName.toLowerCase()==='svg'){var fl3=lum(fcs.fill);"
-                 "if(fl3!==null&&fl3>0.5)continue;}"
-               "var fcl=fe.className;if(fcl&&fcl.baseVal!==undefined)fcl=fcl.baseVal;fcl=String(fcl||'');"
-               "window.__AD_FLTSCAN__='tag='+fe.tagName.toLowerCase()"
-                 "+' cls='+fcl.slice(0,30)+'@'+Math.round(fr2.width)+'x'+Math.round(fr2.height)"
-                 "+' alt='+String((fe.getAttribute&&fe.getAttribute('alt'))||'-').slice(0,14);"
-               "break;}}"
+           // FILTER PANEL BY HEADING. The tile container uses hashed class names
+           // (no filter/refinement/facet), so anchor on the visible "Filters for"
+           // heading instead, walk up to the section, and whiten every monochrome
+           // pictogram inside. SKIP still protects photo pills. The audit reports
+           // up to three refused candidates -- the old version stopped on the
+           // FIRST candidate, which was a correctly-skipped product pill, and
+           // masked the real miss.
+           "try{var fhead=document.evaluate("
+             "\"//*[contains(text(),'Filters for')]\","
+             "document,null,XPathResult.FIRST_ORDERED_NODE_TYPE,null).singleNodeValue;"
+             "if(fhead){var fsec=fhead,fu=0;"
+               "while(fsec.parentElement&&fu++<6){var fsr=fsec.parentElement.getBoundingClientRect();"
+                 "if(fsr.width>300&&fsr.height>220){fsec=fsec.parentElement;break;}"
+                 "fsec=fsec.parentElement;}"
+               "var fels=fsec.querySelectorAll('img,svg,i,span,div');"
+               "var fmiss=[];"
+               "for(var fz=0;fz<fels.length&&fz<400;fz++){var fe2=fels[fz];"
+                 "var fr3=fe2.getBoundingClientRect();"
+                 "if(fr3.width<10||fr3.width>90||fr3.height<10||fr3.height>90)continue;"
+                 "var fc2=fe2.className;if(fc2&&fc2.baseVal!==undefined)fc2=fc2.baseVal;fc2=String(fc2||'');"
+                 "if(SKIP.test(fc2))continue;"
+                 "var ftg=fe2.tagName.toLowerCase();"
+                 "var fcs2=getComputedStyle(fe2);"
+                 "var fart=(ftg==='img')||(ftg==='svg')"
+                   "||(fcs2.backgroundImage&&fcs2.backgroundImage.indexOf('url(')>=0)"
+                   "||((fcs2.webkitMaskImage||fcs2.maskImage||'none')!=='none');"
+                 "if(!fart)continue;"
+                 "if(String(fcs2.filter||'').indexOf('invert')>=0)continue;"
+                 "if(ftg==='svg'){fe2.style.setProperty('fill','#ffffff','important');"
+                   "fe2.style.setProperty('stroke','#ffffff','important');continue;}"
+                 "fe2.style.setProperty('filter','brightness(0) invert(1)','important');"
+                 "fe2.style.setProperty('background-color','transparent','important');"
+                 "fe2.__adGlyph=1;"
+                 "if(fmiss.length<3)fmiss.push(ftg+'.'+fc2.slice(0,22)+'@'+Math.round(fr3.width)+'x'+Math.round(fr3.height));}"
+               "if(fmiss.length&&!window.__AD_FLTSCAN__)window.__AD_FLTSCAN__='lit: '+fmiss.join(' ');"
+             "}"
            "}catch(e){}"
                       // COMPARE DISC BY POSITION. Name-based selection has missed in every
            // form, so use the layout invariant instead: the compare control is the
@@ -1601,6 +1626,35 @@ static void ADPreDarken(WKWebView *wv){
             if (au.length > 70) au = [au substringToIndex:70];
             ADLog(@"wvattach cls=%s url=%@ t=%.1f", object_getClassName(self), au, ADUptime());
             __weak WKWebView *weakWv = self;
+            // Delegate-independent late coverage: watch the URL itself. Prewarmed
+            // views (AMIConfigurableWebView) sit blank for minutes, then navigate
+            // when their surface opens -- long after any fixed schedule.
+            {
+                NSTimer *poll = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES
+                                                                  block:^(NSTimer *tm){
+                    @try {
+                        WKWebView *wp = weakWv;
+                        static const void *kLastU = &kLastU;
+                        if (!wp){ [tm invalidate]; return; }
+                        if (ADUptime() > 900.0){ [tm invalidate]; return; }
+                        NSString *cu = wp.URL.absoluteString ?: @"";
+                        NSString *lu = objc_getAssociatedObject(wp, kLastU) ?: @"";
+                        if ([cu isEqualToString:lu]) return;
+                        objc_setAssociatedObject(wp, kLastU, cu, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                        if (!cu.length || !wp.window) return;
+                        NSString *cs = cu.length > 60 ? [cu substringToIndex:60] : cu;
+                        [wp evaluateJavaScript:ADDarkReaderReapply()
+                             completionHandler:^(id rp, NSError *ep){
+                            @try {
+                                if (ep) ADLog(@"wvpoll %@ -> ERR %@/%ld", cs, ep.domain, (long)ep.code);
+                                else if ([rp isKindOfClass:[NSString class]]) ADLog(@"wvpoll %@ -> %@", cs, rp);
+                                else ADLog(@"wvpoll %@ -> (nil)", cs);
+                            } @catch(...) {}
+                        }];
+                    } @catch(...) { [tm invalidate]; }
+                }];
+                (void)poll;
+            }
             for (NSNumber *delay in @[@0.8, @2.0, @4.5]){
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
