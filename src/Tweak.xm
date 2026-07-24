@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.123.0"
+#define AD_VERSION "v5.124.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -617,7 +617,9 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                // element's OWN direct text nodes should disqualify it.
                "var ot=false;for(var z=0;z<el.childNodes.length;z++){var nz=el.childNodes[z];"
                  "if(nz.nodeType===3&&nz.nodeValue&&nz.nodeValue.trim()){ot=true;break;}}"
-               "var lim=ICON.test(cn2)?40:36;"
+               "var inFlt=false;try{inFlt=!!(el.closest&&el.closest("
+                 "'[class*=filter],[class*=refinement],[class*=facet]'));}catch(e){}"
+               "var lim=inFlt?72:(ICON.test(cn2)?40:36);"
                "var inContent=false;try{inContent=!!(el.closest&&el.closest("
                  "'[data-hook*=review],[class*=review],[class*=profile],[class*=avatar],"
                  "[class*=author],[class*=byline],[class*=merchant],[class*=seller],"
@@ -628,7 +630,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                // this does not catch the glyphs we actually want.
                "var isI=el.tagName.toLowerCase()==='img';"
                "var hasAlt=isI&&el.getAttribute&&(el.getAttribute('alt')||'').trim().length>1;"
-               "if(gr.width>5&&gr.width<=lim&&gr.height>5&&gr.height<=lim&&!SKIP.test(cn2)&&!ot&&bgOf(el)<=0.5&&!inContent&&!hasAlt){"
+               "if(gr.width>5&&gr.width<=lim&&gr.height>5&&gr.height<=lim&&!SKIP.test(cn2)&&!ot&&bgOf(el)<=0.5&&!inContent&&(inFlt||!hasAlt)){"
                  "var hasB=cs.backgroundImage&&cs.backgroundImage!=='none';"
                  "if(isI||hasB){el.style.setProperty('filter','brightness(0) invert(1)','important');"
                    "el.__adGlyph=1;gfix++;}}"
@@ -745,7 +747,28 @@ static NSString *ADDarkReaderBootstrapBuild(void){
 
            // Clear stray dark square wrappers around the buttons (the box that
            // can extend past the pill). Shapes/borders are persistent CSS above.
-           // COMPARE DISC BY POSITION. Name-based selection has missed in every
+           // FILTER ICON AUDIT. One-shot: report the first filter-panel pictogram
+           // the whitener REFUSED and why, so a residual dark icon arrives in the
+           // log as a named target instead of another screenshot round.
+           "try{if(!window.__AD_FLTSCAN__){"
+             "var FQ=document.querySelectorAll("
+               "'[class*=filter] img,[class*=refinement] img,[class*=facet] img,"
+               "[class*=filter] svg,[class*=refinement] svg,[class*=facet] svg');"
+             "for(var ff=0;ff<FQ.length&&ff<120;ff++){var fe=FQ[ff];"
+               "if(fe.__adGlyph)continue;"
+               "var fr2=fe.getBoundingClientRect();"
+               "if(fr2.width<8||fr2.width>90||fr2.height<8||fr2.height>90)continue;"
+               "var fcs=getComputedStyle(fe);"
+               "if(String(fcs.filter||'').indexOf('invert')>=0)continue;"
+               "if(fe.tagName.toLowerCase()==='svg'){var fl3=lum(fcs.fill);"
+                 "if(fl3!==null&&fl3>0.5)continue;}"
+               "var fcl=fe.className;if(fcl&&fcl.baseVal!==undefined)fcl=fcl.baseVal;fcl=String(fcl||'');"
+               "window.__AD_FLTSCAN__='tag='+fe.tagName.toLowerCase()"
+                 "+' cls='+fcl.slice(0,30)+'@'+Math.round(fr2.width)+'x'+Math.round(fr2.height)"
+                 "+' alt='+String((fe.getAttribute&&fe.getAttribute('alt'))||'-').slice(0,14);"
+               "break;}}"
+           "}catch(e){}"
+                      // COMPARE DISC BY POSITION. Name-based selection has missed in every
            // form, so use the layout invariant instead: the compare control is the
            // icon-sized overlay in the lower-left of the product image (the heart
            // owns the lower-right). Report what was found ONCE via CMPSCAN so the
@@ -1071,6 +1094,7 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "}catch(e){}"
              "pr=' url='+String(location.pathname||'').slice(0,28)"
                "+(window.__AD_CMPX__?(' CMPX='+window.__AD_CMPX__):'')"
+               "+(window.__AD_FLTSCAN__?(' FLTSCAN['+window.__AD_FLTSCAN__+']'):'')"
                "+(window.__AD_CMPSCAN__?(' CMPSCAN['+window.__AD_CMPSCAN__+']'):'')"
                "+(window.__AD_CMPFIX__?(' CMPFIX['+window.__AD_CMPFIX__+']'):'')"
                "+(window.__AD_KEBAB__?(' KEBAB='+window.__AD_KEBAB__):'')"
