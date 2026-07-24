@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.121.0"
+#define AD_VERSION "v5.123.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -344,7 +344,9 @@ static NSString *ADFixesLiteral(void){
              "[class*=copilot-compare][class*=on-image-button],"
              "[class*=copilot-compare] [class*=on-image-button],"
              "[class*=s-product-image] button[aria-label*=ompare],"
-             "[class*=puisg-col] [role=button][aria-label*=ompare]"
+             "[class*=puisg-col] [role=button][aria-label*=ompare],"
+             "[class*=s-product-image] [data-csa-c-content-id*=ompare],"
+             "[class*=puisg-col] [data-csa-c-content-id*=ompare]"
              "{background-color:#181a1b !important;border-radius:50%% !important;"
              "border:1.5px solid rgba(255,255,255,0.65) !important;"
              "box-shadow:none !important;box-sizing:border-box !important;}"
@@ -366,7 +368,13 @@ static NSString *ADFixesLiteral(void){
              "[class*=s-product-image] button[aria-label*=ompare] svg,"
              "[class*=puisg-col] [role=button][aria-label*=ompare] img,"
              "[class*=puisg-col] [role=button][aria-label*=ompare] i,"
-             "[class*=puisg-col] [role=button][aria-label*=ompare] svg"
+             "[class*=puisg-col] [role=button][aria-label*=ompare] svg,"
+             "[class*=s-product-image] [data-csa-c-content-id*=ompare] img,"
+             "[class*=s-product-image] [data-csa-c-content-id*=ompare] i,"
+             "[class*=s-product-image] [data-csa-c-content-id*=ompare] svg,"
+             "[class*=puisg-col] [data-csa-c-content-id*=ompare] img,"
+             "[class*=puisg-col] [data-csa-c-content-id*=ompare] i,"
+             "[class*=puisg-col] [data-csa-c-content-id*=ompare] svg"
              "{filter:brightness(0) invert(1) !important;"
              "background-color:transparent !important;}"
              "[class*=puis-heart-position] [class*=placehold],[class*=heart-placeholder]"
@@ -472,13 +480,15 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "var c=n.className;if(c&&c.baseVal!==undefined)c=c.baseVal;c=String(c||'');"
              "if(__adPinRe.test(c)){n.style.setProperty('background-color','transparent','important');}"
              "if(String(c).indexOf('a-section')>=0&&n.closest&&"
-               "n.closest('[class*=puis],[class*=s-result],[class*=s-card]')){"
+               "n.closest('[class*=puis],[class*=s-result],[class*=s-card]')&&"
+               "!n.closest('[class*=s-product-image]')){"
                "n.style.setProperty('background-color','#181a1b','important');}"
              "if(n.querySelectorAll){var q=n.querySelectorAll('[class*=unfill],[class*=placehold]');"
                "for(var i=0;i<q.length;i++)q[i].style.setProperty('background-color','transparent','important');"
                "var q2=n.querySelectorAll('[class*=a-section]');"
                "for(var k2=0;k2<q2.length&&k2<200;k2++){var e2=q2[k2];"
-                 "if(e2.closest&&e2.closest('[class*=puis],[class*=s-result],[class*=s-card]')){"
+                 "if(e2.closest&&e2.closest('[class*=puis],[class*=s-result],[class*=s-card]')&&"
+                   "!e2.closest('[class*=s-product-image]')){"
                    "e2.style.setProperty('background-color','#181a1b','important');}}}"
            "}catch(e){}};"
            "new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var m=ms[i];"
@@ -735,7 +745,83 @@ static NSString *ADDarkReaderBootstrapBuild(void){
 
            // Clear stray dark square wrappers around the buttons (the box that
            // can extend past the pill). Shapes/borders are persistent CSS above.
-           "try{var AIC=document.querySelectorAll('[class*=a-icon]');"
+           // COMPARE DISC BY POSITION. Name-based selection has missed in every
+           // form, so use the layout invariant instead: the compare control is the
+           // icon-sized overlay in the lower-left of the product image (the heart
+           // owns the lower-right). Report what was found ONCE via CMPSCAN so the
+           // real class can graduate into the stylesheet.
+           "try{var IMGC=document.querySelectorAll('[class*=s-product-image]');"
+             "for(var ig=0;ig<IMGC.length&&ig<40;ig++){var box=IMGC[ig];"
+               "var br=box.getBoundingClientRect();"
+               "if(br.width<80||br.height<80)continue;"
+               "var alln=box.querySelectorAll('*');var tgt=null;"
+               "for(var an=0;an<alln.length&&an<150;an++){var el2=alln[an];"
+                 "var er=el2.getBoundingClientRect();"
+                 "if(er.width<22||er.width>46||er.height<22||er.height>46)continue;"
+                 "if(er.left-br.left>br.width*0.40)continue;"
+                 "if(er.bottom<br.top+br.height*0.55)continue;"
+                 "if(el2.closest&&el2.closest('[class*=heart],[class*=wish],[class*=lists-framework]'))continue;"
+                 "var art=el2.querySelector('img,i,svg');"
+                 "var ecs=getComputedStyle(el2);"
+                 "var selfArt=(ecs.backgroundImage&&ecs.backgroundImage!=='none')"
+                   "||((ecs.webkitMaskImage||ecs.maskImage||'none')!=='none');"
+                 "if(!art&&!selfArt)continue;"
+                 "tgt=el2;var artMode=art?'child':'self';"
+                 "tgt.style.setProperty('background-color','#181a1b','important');"
+                 "tgt.style.setProperty('border-radius','50%%','important');"
+                 "tgt.style.setProperty('border','1.5px solid rgba(255,255,255,0.65)','important');"
+                 "tgt.style.setProperty('box-shadow','none','important');"
+                 "tgt.style.setProperty('box-sizing','border-box','important');"
+                 "if(art){var arts=tgt.querySelectorAll('img,i,svg');"
+                   "for(var av=0;av<arts.length&&av<6;av++){"
+                     "arts[av].style.setProperty('filter','brightness(0) invert(1)','important');"
+                     "arts[av].style.setProperty('background-color','transparent','important');}}"
+                 // sprite drawn by the element's own background: silhouette via a
+                 // pseudo cannot be set inline, so lift the artwork with invert and
+                 // let the pinned dark bg/border above stay (they are bg-COLOR and
+                 // border, unaffected by filter stacking order on the same element
+                 // is fine: filter applies to the whole element render, so instead
+                 // skip filter here and rely on mask colouring below).
+                 "if(!art&&selfArt&&(ecs.webkitMaskImage||ecs.maskImage||'none')!=='none'){"
+                   "tgt.style.setProperty('background-color','#e8e6e3','important');}"
+                 "var pe2=tgt.parentElement,pd2=0;"
+                 "while(pe2&&pd2++<2){var pr2=pe2.getBoundingClientRect();"
+                   "if(pr2.width<=64&&pr2.height<=64){"
+                     "pe2.style.setProperty('background-color','transparent','important');"
+                     "pe2.style.setProperty('box-shadow','none','important');}"
+                   "pe2=pe2.parentElement;}"
+                 "if(!window.__AD_CMPSCAN__){var pcl2=tgt.parentElement?String(tgt.parentElement.className&&tgt.parentElement.className.baseVal!==undefined?tgt.parentElement.className.baseVal:tgt.parentElement.className||''):'-';"
+                   "var scl2=String(tgt.className&&tgt.className.baseVal!==undefined?tgt.className.baseVal:tgt.className||'');"
+                   "window.__AD_CMPSCAN__='self='+scl2.slice(0,36)+' par='+pcl2.slice(0,36)+' art='+artMode;}"
+                 "break;}}"
+           "}catch(e){}"
+                      // COMPARE DISC BY GEOMETRY. The heart is right; the compare button is
+           // the same widget under a different name per layout. Find it the way the
+           // probe does, verify it is icon-sized inside a product card, apply the
+           // exact heart look inline, and report the class ONCE so the stylesheet
+           // can be pinned to the real selector next round.
+           "try{var CF=document.querySelectorAll("
+             "'[aria-label*=ompare],[class*=compare],[data-csa-c-content-id*=ompare]');"
+             "for(var cf=0;cf<CF.length&&cf<80;cf++){var ce=CF[cf];"
+               "var cr2=ce.getBoundingClientRect();"
+               "if(cr2.width<22||cr2.width>46||cr2.height<22||cr2.height>46)continue;"
+               "if(!(ce.closest&&ce.closest('[class*=s-product-image],[class*=puisg-col]')))continue;"
+               "var ccl=ce.className;if(ccl&&ccl.baseVal!==undefined)ccl=ccl.baseVal;ccl=String(ccl||'');"
+               "if(/tray|heart|wish|lists-framework/i.test(ccl))continue;"
+               "ce.style.setProperty('background-color','#181a1b','important');"
+               "ce.style.setProperty('border-radius','50%%','important');"
+               "ce.style.setProperty('border','1.5px solid rgba(255,255,255,0.65)','important');"
+               "ce.style.setProperty('box-shadow','none','important');"
+               "ce.style.setProperty('box-sizing','border-box','important');"
+               "var cg=ce.querySelectorAll('img,i,svg');"
+               "for(var cg2=0;cg2<cg.length&&cg2<6;cg2++){"
+                 "cg[cg2].style.setProperty('filter','brightness(0) invert(1)','important');"
+                 "cg[cg2].style.setProperty('background-color','transparent','important');}"
+               "if(!window.__AD_CMPFIX__){window.__AD_CMPFIX__="
+                 "'cls='+ccl.slice(0,40)+' aria='+String(ce.getAttribute('aria-label')||'-').slice(0,24)"
+                 "+' csa='+String(ce.getAttribute('data-csa-c-content-id')||'-').slice(0,24);}}"
+           "}catch(e){}"
+                      "try{var AIC=document.querySelectorAll('[class*=a-icon]');"
              "for(var ai=0;ai<AIC.length&&ai<500;ai++){var ae=AIC[ai];"
                "var acn=ae.className;if(acn&&acn.baseVal!==undefined)acn=acn.baseVal;acn=String(acn||'');"
                "if(/star|prime|logo|flag|swatch|thumb|sponsor|product|photo|-alt|toggle|switch|checkbox|heart|wish|lists-framework|copilot-compare/i.test(acn))continue;"
@@ -985,6 +1071,8 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "}catch(e){}"
              "pr=' url='+String(location.pathname||'').slice(0,28)"
                "+(window.__AD_CMPX__?(' CMPX='+window.__AD_CMPX__):'')"
+               "+(window.__AD_CMPSCAN__?(' CMPSCAN['+window.__AD_CMPSCAN__+']'):'')"
+               "+(window.__AD_CMPFIX__?(' CMPFIX['+window.__AD_CMPFIX__+']'):'')"
                "+(window.__AD_KEBAB__?(' KEBAB='+window.__AD_KEBAB__):'')"
                "+(window.__AD_CMPBAR__?(' CMPBAR='+window.__AD_CMPBAR__):'')"
                "+(window.__AD_PROMO__?(' PROMO='+window.__AD_PROMO__):'')"
@@ -1328,7 +1416,7 @@ static void ADWalkWebViews(UIView *v){
                     [wv evaluateJavaScript:
                         @"(function(){try{return (location.href||'nohref').slice(0,60)"
                          "+' DR='+(window.DarkReader?1:0)"
-                         "+' t='+String(document.title||'').slice(0,24);}catch(e){return 'jserr';}})()"
+                         "+' t='+String(document.title||'').slice(0,24)+' fr='+frames.length;}catch(e){return 'jserr';}})()"
                          completionHandler:^(id pr, NSError *pe){
                         @try {
                             if (pe) ADLog(@"wvping %@ -> ERR %@/%ld appbound=%d",
@@ -1515,6 +1603,29 @@ static void ADPreDarken(WKWebView *wv){
 }
 - (void)webView:(WKWebView *)wv didFinishNavigation:(id)nav {
     %orig;
+    // Late surfaces navigate long after every timer is dead; run the repair on a
+    // short private schedule after EVERY finished navigation so client-side and
+    // late loads (Pharmacy) are covered without any global cadence.
+    @try {
+        __weak WKWebView *weakNav = wv;
+        for (NSNumber *d2 in @[@0.6, @1.8]){
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d2.doubleValue * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                @try {
+                    WKWebView *wv3 = weakNav;
+                    if (!wv3 || !wv3.window) return;
+                    NSString *u5 = wv3.URL.absoluteString ?: @"(no url)";
+                    if (u5.length > 60) u5 = [u5 substringToIndex:60];
+                    [wv3 evaluateJavaScript:ADDarkReaderReapply()
+                          completionHandler:^(id r6, NSError *e6){
+                        @try {
+                            if (e6) ADLog(@"navrepair %@ -> ERR %@/%ld", u5, e6.domain, (long)e6.code);
+                        } @catch(...) {}
+                    }];
+                } @catch(...) {}
+            });
+        }
+    } @catch(...) {}
     ADEnableDarkReaderIn(self);
 }
 %end
@@ -3493,6 +3604,18 @@ static BOOL ADImageMostlyLight(UIImage *img){
 }
 static int gSplashDumpLeft = 10;
 static int gSplashFixLeft  = 6;
+static BOOL ADViewHasContentDescendant(UIView *v, int depth){
+    if (!v || depth > 3) return NO;
+    @try {
+        for (UIView *sv in v.subviews){
+            if ([sv isKindOfClass:[UITextField class]] || [sv isKindOfClass:[UITextView class]]) return YES;
+            if ([sv isKindOfClass:[UILabel class]] && ((UILabel *)sv).text.length) return YES;
+            if ([sv isKindOfClass:[UIImageView class]] && ((UIImageView *)sv).image) return YES;
+            if (ADViewHasContentDescendant(sv, depth + 1)) return YES;
+        }
+    } @catch(...) {}
+    return NO;
+}
 static int gSplashPillLeft = 4;
 static void ADLaunchWhiteGuard(UIView *v){
     @try {
@@ -3503,8 +3626,10 @@ static void ADLaunchWhiteGuard(UIView *v){
         // rounded/bordered pill near the top. On the dark launch frame it reads as
         // a stray border (reported as a "dynamic island border"). Hide it -- it is
         // decoration on a screen that exists for under a second.
-        if (h >= 36 && h <= 96 && w >= sb.size.width*0.55 && w < sb.size.width*0.98 &&
-            (v.layer.cornerRadius >= 12.0 || v.layer.borderWidth > 0.4)){
+        if (ADUptime() < 4.0 &&
+            h >= 36 && h <= 96 && w >= sb.size.width*0.55 && w < sb.size.width*0.98 &&
+            (v.layer.cornerRadius >= 12.0 || v.layer.borderWidth > 0.4) &&
+            !ADViewHasContentDescendant(v, 0)){
             if (gSplashPillLeft > 0){
                 gSplashPillLeft--;
                 ADLog(@"splashpill hid cls=%s %.0fx%.0f r=%.0f bw=%.1f",
