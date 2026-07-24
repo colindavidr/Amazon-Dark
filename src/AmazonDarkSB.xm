@@ -119,9 +119,37 @@ static void ADPresentCover(void) {
         w.rootViewController = vc;
         w.backgroundColor = dark;
 
-        // Centered Amazon app icon -> the dark loading screen reads as a proper
-        // splash instead of a black void.
+        // Inverted splash logo, generated from the app's own launch screen: dark
+        // ground, light wordmark, the orange smile kept orange. Falls back to the
+        // rounded app icon only if the packaged asset is missing.
+        BOOL usedSplash = NO;
         @try {
+            UIImage *splash = nil;
+            NSArray *cand = @[@"/var/jb/Library/Application Support/AmazonDark/splash-logo.png",
+                              @"/Library/Application Support/AmazonDark/splash-logo.png"];
+            for (NSString *cp in cand) {
+                splash = [UIImage imageWithContentsOfFile:cp];
+                if (splash) break;
+            }
+            if (splash) {
+                UIImageView *logo = [[UIImageView alloc] initWithImage:splash];
+                logo.contentMode = UIViewContentModeScaleAspectFit;   // wordmark: no
+                logo.translatesAutoresizingMaskIntoConstraints = NO;  // corner mask
+                [vc.view addSubview:logo];
+                CGFloat lw = [UIScreen mainScreen].bounds.size.width * 0.62;
+                CGFloat lh = lw * (splash.size.height / MAX(splash.size.width, 1.0));
+                [NSLayoutConstraint activateConstraints:@[
+                    [logo.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
+                    [logo.centerYAnchor constraintEqualToAnchor:vc.view.centerYAnchor],
+                    [logo.widthAnchor constraintEqualToConstant:lw],
+                    [logo.heightAnchor constraintEqualToConstant:lh],
+                ]];
+                usedSplash = YES;
+                ADSBLog([NSString stringWithFormat:@"COVER splash logo (%.0fx%.0f)", splash.size.width, splash.size.height]);
+            }
+        } @catch (__unused NSException *e) {}
+        @try {
+            if (usedSplash) goto coverAssembled;
             UIImage *icon = nil;
             if ([UIImage respondsToSelector:@selector(_applicationIconImageForBundleIdentifier:format:scale:)])
                 icon = [UIImage _applicationIconImageForBundleIdentifier:kAMZ format:2 scale:[UIScreen mainScreen].scale];
@@ -143,6 +171,7 @@ static void ADPresentCover(void) {
                 ADSBLog(@"COVER logo added");
             } else { ADSBLog(@"COVER logo unavailable"); }
         } @catch (__unused NSException *e) {}
+        coverAssembled:;
         w.windowLevel = UIWindowLevelAlert + 1.0;
         w.userInteractionEnabled = NO;
         w.hidden = NO;   // show without becoming key (don't steal input focus)

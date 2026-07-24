@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.117.0"
+#define AD_VERSION "v5.118.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -332,29 +332,21 @@ static NSString *ADFixesLiteral(void){
              // with a documentStart CSS rule and it visibly worked; v5.28.0 removed it
              // because [class*=heart-position] dragged the 32px disc into the whitening
              // (the white blob). Every JS attempt since lost a timing race CSS cannot
-             // lose: a stylesheet applies to nodes Amazon re-renders later, an inline
-             // style dies with the node it was set on. And brightness(0) invert(1) is
-             // polarity-proof -- dark or light artwork both end up a white silhouette.
-             // Scoped to glyph nodes only; the -position container stays out, so the
-             // disc keeps the dark background the rule below gives it.
-             "[class*=lists-framework-unfill],"
-             "[class*=heart] img:not([class*=placehold]),[class*=wish] img:not([class*=placehold]),"
-             "[class*=lists-framework] img:not([class*=placehold]),"
+             // LEAVE THE ARTWORK ALONE, INVERT IT. One rule replaces the whole
+             // reconstruction era (silhouettes, homemade disc, homemade pill,
+             // clean-slate). Higher specificity than the blanket img/svg
+             // filter:none, so it wins without :not() gymnastics. Dark Reader
+             // themes the CSS colours (disc, pill, label) natively; the raster
+             // artwork it cannot recolor is simply rendered inverted --
+             // hue-rotate keeps any brand tint. Pixels are never modified.
+             "[class*=heart] img,[class*=wish] img,[class*=lists-framework] img,"
              "[class*=heart] svg,[class*=wish] svg,[class*=lists-framework] svg,"
-             "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon]"
-             "{filter:brightness(0) invert(1) !important;}"
-             // The white flash was OURS. puis-heart-placeholder is Amazon's
-             // LIGHT-MODE loading artwork -- shown while the real sprite loads --
-             // and brightness(0) invert(1) turns every opaque pixel of a light
-             // image SOLID WHITE. So the loading frames showed a white box we
-             // painted ourselves, until the changeover swapped in the sprite. A
-             // plain invert+hue-rotate instead renders the placeholder as a
-             // correct dark-mode heart (light disc -> dark, dark glyph -> light)
-             // for those frames; if the asset is a transparent spacer the filter
-             // changes nothing visible. documentStart, so there is no frame
-             // before it applies.
-             "[class*=heart-placeholder]"
+             "[class*=heart] i,[class*=wish] i,[class*=lists-framework] i,"
+             "[class*=heart-placeholder],[class*=lists-framework-unfill],"
+             "[class*=copilot-compare] img,[class*=copilot-compare] svg,"
+             "[class*=copilot-compare] i,[class*=copilot-compare] [class*=a-icon]"
              "{filter:invert(1) hue-rotate(180deg) !important;}"
+
              // Home shortcut strips (Haul / Prime Video / Grocery...): brand
              // artwork sits on LIGHT pills, where the dark image backdrop reads
              // as a black box. Brand imgs keep a clean slate.
@@ -393,26 +385,6 @@ static NSString *ADFixesLiteral(void){
              "{background:none !important;background-image:none !important;"
              "content:none !important;display:none !important;}"
 
-             // Heart circle. The button behind the heart is a light/white disc; on a
-             // dark theme it reads as a bright blob that hides the glyph. Darken it at
-             // documentStart so there is never a white flash. (The earlier
-             // brightness(0)+invert whitened the ENTIRE element -- circle and heart
-             // together -- which is exactly what created the blob.) The glyph itself is
-             // NOT touched any more: the artwork Amazon ships is already light -- on
-             // device the heart rendered white first and went black only when our
-             // invert caught up with it -- so the only job here is the disc.
-             "[class*=heart]:not(img):not([class*=heart-placeholder]),"
-             "[class*=lists-framework]:not(img):not([class*=unfill]),"
-             "[class*=wish]:not(img)"
-             "{background-color:#181a1b !important;}"
-             // The changeover / section shells inside the heart widget carry no
-             // heart-ish substring, so only Dark Reader's ASYNC pass darkened
-             // them -- that gap is the white box seen for the first frames.
-             // documentStart is before first paint; these cannot flash now.
-             "[class*=heart] [class*=changeover],[class*=lists-framework] [class*=changeover],"
-             "[class*=heart-position] div:not([class]),"
-             "[class*=heart] [class*=a-section],[class*=lists-framework] [class*=a-section]"
-             "{background-color:#181a1b !important;}"
              // Card skeletons. The light= probe names div.a-section@76x64 shells
              // that stay light through every pass -- they flash white where the
              // heart will be while the card hydrates. Empty shells carry no
@@ -420,61 +392,20 @@ static NSString *ADFixesLiteral(void){
              "[class*=puis] [class*=a-section]:empty,[class*=s-result] [class*=a-section]:empty,"
              "[class*=s-card] [class*=a-section]:empty"
              "{background-color:#181a1b !important;}"
-             // Glyph carriers must stay transparent or the silhouette filter
-             // inverts their fill into a light box. Placed AFTER the disc rule so
-             // ties resolve here; tripled selectors outrank Dark Reader's
-             // mirrored overrides. No background-image declaration -- v5.38.0's
-             // background-image:inherit deleted the sprite itself.
-             "[class*=lists-framework-unfill][class*=lists-framework-unfill][class*=lists-framework-unfill],"
-             "[class*=heart-placeholder][class*=heart-placeholder][class*=heart-placeholder],"
-             "[class*=heart] i[class*=a-icon],[class*=lists-framework] i[class*=a-icon],"
-             "[class*=wish] i[class*=a-icon]"
-             "{background-color:transparent !important;}"
-             // CLEAN SLATE. Every prior attempt fought a dark wrapper behind the
-             // button. So clear the ENTIRE heart widget and compare widget to
-             // transparent first (no box, no ring artifacts, no diamond), then
-             // paint ONLY the one button element dark and clip it to shape.
-             "[class*=puis-heart-position],[class*=puis-heart-position] *,"
-             "[class*=lists-framework]:not(img),"
-             "[class*=s-csa-instrument],[class*=s-csa-instrument] *"
-             "{background-color:transparent !important;box-shadow:none !important;border:0 !important;}"
-             // Heart circle: dark fill, masked to a circle. -webkit-mask clips the
-             // element (and glyph) to the circle regardless of any radius/clip
-             // override, which is why plain clip-path was not enough here.
-             "[class*=lists-framework-action-button]"
-             "{background-color:#181a1b !important;box-sizing:border-box !important;"
-             "-webkit-mask-image:radial-gradient(circle,#000 0 49%,rgba(0,0,0,0) 50%) !important;"
-             "mask-image:radial-gradient(circle,#000 0 49%,rgba(0,0,0,0) 50%) !important;}"
-             // Compare pill: dark fill, clipped to a pill; label forced light with
-             // -webkit-text-fill-color (beats Dark Reader's inline colour).
-             "[class*=copilot-compare],[class*=copilot-compare] *"
-             "{color:#e8e6e3 !important;-webkit-text-fill-color:#e8e6e3 !important;}"
+
              // Promo/hero card header: no dark box behind it, and its title text
              // stays the stock dark (it sits on a light hero image).
              "[class*=a-cardui-header]{background-color:transparent !important;}"
              "[class*=a-cardui-header] [class*=sub-header-title-font],"
              "[class*=sub-header-title-font]"
              "{color:#0f1111 !important;-webkit-text-fill-color:#0f1111 !important;}"
-             // Kill the compare button's scrim pseudo-elements (the dark
-             // rectangle that extends past the pill).
-             "[class*=copilot-compare]::before,[class*=copilot-compare]::after"
-             "{background:none !important;background-color:transparent !important;"
-             "box-shadow:none !important;content:none !important;}"
-             "[class*=copilot-compare] *:not([class*=on-image-button]):not(img):not(svg)"
-             "{background-color:transparent !important;background-image:none !important;box-shadow:none !important;}"
-             "[class*=copilot-compare] [class*=on-image-button]"
-             "{background-color:#181a1b !important;border:1.5px solid rgba(255,255,255,0.6) !important;"
-             "border-radius:0 !important;box-sizing:border-box !important;overflow:hidden !important;"
-             "box-shadow:none !important;}"
              // Darkening blends crush their content toward black on a dark theme; the
              // deal badges use them inline. Neutralise at documentStart so the text is
              // legible on first paint instead of after the repair catches up.
              "[style*=multiply],[style*=darken],[style*=color-burn],"
              "[class*=deal] [style*=blend],[class*=Deal] [style*=blend]"
              "{mix-blend-mode:normal !important;isolation:auto !important;}"
-             "',invert:[],ignoreInlineStyle:['[class*=copilot-compare]','[class*=copilot-compare] *',"
-             "'[class*=heart]','[class*=heart] *','[class*=lists-framework]','[class*=lists-framework] *',"
-             "'[class*=wish]','[class*=wish] *'],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}",
+             "',invert:[],ignoreInlineStyle:[],ignoreImageAnalysis:['*'],disableStyleSheetsProxy:false}",
             imgBackdrop];
 }
 
@@ -768,49 +699,19 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                  "el.style.setProperty('color','#0f1111','important');continue;}"
              "var bl=bgOf(el);var hi=Math.max(fl,bl)+0.05,lo=Math.min(fl,bl)+0.05;"
              "if(hi/lo<3.0){el.style.setProperty('color',FG,'important');n++;}}"
-           // HEARTS. Two parts, kept separate so they cannot fight: darken the circle
-           // (a light background on the element or a near ancestor) and lighten the
-           // glyph by whatever actually draws it. Doing this by mechanism avoids the
-           // whole-box whitening that hid the heart behind a white disc.
-           "try{var HRT=document.querySelectorAll('[class*=heart],[class*=wish],[class*=lists-framework]');"
-             "for(var hz=0;hz<HRT.length;hz++){var he=HRT[hz];var hcs=getComputedStyle(he);"
-               // circle: darken this element's light bg, and the first light ancestor bg
-               "var hcl2=he.className;if(hcl2&&hcl2.baseVal!==undefined)hcl2=hcl2.baseVal;hcl2=String(hcl2||'');"
-               "if(/action-button/i.test(hcl2)){"
-                 "he.style.setProperty('background-color',BG,'important');"
-                 "he.style.setProperty('-webkit-mask-image','none','important');"
-                 "he.style.setProperty('mask-image','none','important');"
-                 "he.style.setProperty('border','1.5px solid rgba(255,255,255,0.6)','important');"
-                 "he.style.setProperty('box-sizing','border-box','important');}"
-               "else if(/heart-position/i.test(hcl2)){he.style.setProperty('background-color','transparent','important');}"
-               "else if(/unfill|placehold|a-icon/i.test(hcl2)){he.style.setProperty('background-color','transparent','important');}"
-               "else if(lum(hcs.backgroundColor)>0.5){he.style.setProperty('background-color',BG,'important');}"
-               "var pe=he.parentElement,pd=0;"
-               "while(pe&&pd++<3){var pl=lum(getComputedStyle(pe).backgroundColor);"
-                 "if(pl!==null&&pl>0.5){pe.style.setProperty('background-color',BG,'important');break;}"
-                 "pe=pe.parentElement;}"
-               // glyph: img/bgimg is handled by the documentStart CSS silhouette
-               // rule (the v5.27.0 approach that demonstrably worked) -- CSS survives
-               // Amazon re-rendering the node, inline styles do not, which is where
-               // every JS-era attempt actually died. Here: masks, then fill/color.
-               "var hrc=he.getBoundingClientRect();"
-               "var isGlyph=(hrc.width>0&&hrc.width<=28&&hrc.height>0&&hrc.height<=28);"
-               "var hmi=hcs.webkitMaskImage||hcs.maskImage;"
-               "if(hmi&&hmi!=='none'){if(!/action-button/i.test(hcl2)&&hrc.width>0&&hrc.width<=30&&hrc.height>0&&hrc.height<=30)he.style.setProperty('background-color',FG,'important');}"
-               "else{var hf=lum(hcs.fill);if(hf!==null&&hf<0.35)he.style.setProperty('fill',FG,'important');"
-                 "var hc2=lum(hcs.color);if(hc2!==null&&hc2<0.35)he.style.setProperty('color',FG,'important');}"
-             "}}catch(e){}"
+
            // Clear stray dark square wrappers around the buttons (the box that
            // can extend past the pill). Shapes/borders are persistent CSS above.
            "try{var AIC=document.querySelectorAll('[class*=a-icon]');"
              "for(var ai=0;ai<AIC.length&&ai<500;ai++){var ae=AIC[ai];"
                "var acn=ae.className;if(acn&&acn.baseVal!==undefined)acn=acn.baseVal;acn=String(acn||'');"
-               "if(/star|prime|logo|flag|swatch|thumb|sponsor|product|photo|-alt|toggle|switch|checkbox/i.test(acn))continue;"
+               "if(/star|prime|logo|flag|swatch|thumb|sponsor|product|photo|-alt|toggle|switch|checkbox|heart|wish|lists-framework|copilot-compare/i.test(acn))continue;"
                "var acs=getComputedStyle(ae),abf=getComputedStyle(ae,'::before'),aba=getComputedStyle(ae,'::after');"
                "var abi=acs.backgroundImage||acs.webkitMaskImage||acs.maskImage"
                  "||abf.backgroundImage||abf.webkitMaskImage||abf.maskImage"
                  "||aba.backgroundImage||aba.webkitMaskImage||aba.maskImage;"
                "if(!abi||abi==='none'||abi.indexOf('url(')<0)continue;"
+               "if(ae.closest&&ae.closest('[class*=heart],[class*=wish],[class*=lists-framework],[class*=copilot-compare]'))continue;"
                "var ar=ae.getBoundingClientRect();"
                "if(ar.width>5&&ar.width<=60&&ar.height>5&&ar.height<=60){"
                  "ae.style.setProperty('filter','brightness(0) invert(1)','important');ae.__adGlyph=1;}}"
@@ -866,57 +767,10 @@ static NSString *ADDarkReaderBootstrapBuild(void){
                    "if(dbl!==null&&dbl<0.5){g.style.setProperty('background-color',FG,'important');continue;}}}"
              "};"
              "var WGT=document.querySelectorAll("
-               "'[class*=sc-nested-actions],[class*=copilot-compare],[class*=comparison-tray],[class*=compare-tray],[class*=sc-compare]');"
+               "'[class*=sc-nested-actions]');"
              "for(var wti=0;wti<WGT.length&&wti<40;wti++)WG(WGT[wti]);"
            "}catch(e){}"
-           "try{var CM2=document.querySelectorAll('[class*=copilot-compare]');"
-             "for(var mi=0;mi<CM2.length&&mi<40;mi++){var mc=CM2[mi];"
-               "var mcs=getComputedStyle(mc),mr=mc.getBoundingClientRect();"
-               "if(mr.width<20||mr.height<10)continue;"
-               "var mcl=mc.className;if(mcl&&mcl.baseVal!==undefined)mcl=mcl.baseVal;mcl=String(mcl||'');"
-               "var mrad=parseFloat(mcs.borderTopLeftRadius)||0;"
-               "if(/on-image-button/i.test(mcl)||mrad>=Math.min(mr.width,mr.height)*0.4){"
-                 "mc.style.setProperty('background-color',BG,'important');"
-                 "mc.style.setProperty('border-radius','0','important');"
-                 "mc.style.setProperty('overflow','hidden','important');"
-                 "mc.style.setProperty('clip-path','inset(0)','important');"
-                 "mc.style.setProperty('border','1.5px solid rgba(255,255,255,0.6)','important');"
-                 "mc.style.setProperty('box-sizing','border-box','important');"
-                 "mc.style.setProperty('box-shadow','none','important');}"
-               "else{"
-                 "mc.style.setProperty('background-color','transparent','important');"
-                 "mc.style.setProperty('border','0','important');"
-                 "mc.style.setProperty('box-shadow','none','important');}}"
-           "var RB=document.querySelectorAll('[class*=copilot-compare],[class*=puis-heart-position]');"
-             "for(var ri=0;ri<RB.length&&ri<60;ri++){var rbe=RB[ri];"
-               "var r0=rbe.getBoundingClientRect();if(r0.width<16)continue;"
-               "var wb=rbe.parentElement,wd=0;"
-               "while(wb&&wd++<8){var wbr=wb.getBoundingClientRect();"
-                 "if(wbr.width<320&&wbr.height<220){var wc=getComputedStyle(wb);"
-                   "if((parseFloat(wc.borderTopLeftRadius)||0)<40&&lum(wc.backgroundColor)!==null&&lum(wc.backgroundColor)<0.4){"
-                     "wb.style.setProperty('background-color','transparent','important');"
-                     "wb.style.setProperty('box-shadow','none','important');"
-                     "wb.style.setProperty('border','0','important');}}"
-                 "wb=wb.parentElement;}}"
-           "}catch(e){}"
-           "try{var XCB=document.querySelectorAll('[class*=copilot-compare]');"
-             "for(var xci=0;xci<XCB.length&&xci<40;xci++){var xb=XCB[xci];"
-               "var xcl=xb.className;if(xcl&&xcl.baseVal!==undefined)xcl=xcl.baseVal;xcl=String(xcl||'');"
-               "if(!/on-image-button/i.test(xcl))continue;"
-               "var xr=xb.getBoundingClientRect();if(xr.width<16)continue;"
-               "var anc=xb.parentElement,ad=0;"
-               "while(anc&&ad++<4){var kids=anc.children;"
-                 "for(var ki=0;ki<kids.length;ki++){var kd=kids[ki];"
-                   "if(kd===xb||kd.contains(xb))continue;"
-                   "var kr=kd.getBoundingClientRect();"
-                   "if(kr.right<=xr.left+1||kr.left>=xr.right-1)continue;"
-                   "if(kr.top>=xr.top-1&&kr.bottom<=xr.bottom+1)continue;"
-                   "var kbl=lum(getComputedStyle(kd).backgroundColor);"
-                   "if(kbl!==null&&kbl<0.4){kd.style.setProperty('background-color','transparent','important');"
-                     "kd.style.setProperty('box-shadow','none','important');"
-                     "kd.style.setProperty('border','0','important');}}"
-                 "anc=anc.parentElement;}}"
-           "}catch(e){}"
+
            // One-shot probe. Two builds have now been spent inferring what paints
            // these glyphs from what does NOT move. Cheaper to just ask the DOM: report
            // the first few icon-sized elements and which mechanism draws each, so the
