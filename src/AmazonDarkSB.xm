@@ -1,33 +1,43 @@
 // AmazonDarkSB.xm
 // SpringBoard-side dark cover for the Amazon Shopping launch screen.
 //
-// Injected ONLY into com.apple.springboard (see AmazonDarkSB.plist). The system
-// draws Amazon's white LaunchScreen storyboard/snapshot from the render server
-// BEFORE Amazon's own process (and the main AmazonDark tweak) is alive, so that
-// frame cannot be themed from inside Amazon. Here, in SpringBoard, we drop a
-// dark view over Amazon's launching scene and pull it a few seconds later.
+// Injected ONLY into com.apple.springboard (AmazonDarkSB.plist). Amazon's white
+// LaunchScreen is drawn by the render server before Amazon's process is alive,
+// so it can't be themed from inside Amazon. Here we float a dark WINDOW over the
+// launching Amazon scene and lift it a few seconds later.
 //
-// SAFETY (this runs in SpringBoard, so a fault here = safe mode):
-//   - every hook body is wrapped in @try/@catch, nothing escapes;
-//   - the cover removes itself on a hard timer and an absolute cap, so it can
-//     NEVER get stuck blacking out the screen;
-//   - we only touch a scene whose bundle id is EXACTLY com.amazon.Amazon;
-//   - a class/keypath log is written so we can confirm the hook landed.
+// Why a separate window and not a subview of the scene: an opaque view placed
+// INSIDE SBSceneView makes FrontBoard treat Amazon's scene as fully occluded, so
+// it suspends rendering and the app never draws (permanent black). A separate
+// SpringBoard window floats on top without changing the app scene's occlusion,
+// so Amazon renders normally underneath and is there the instant we lift it.
+//
+// SAFETY (runs in SpringBoard => a fault here is safe mode):
+//   - every entry point is @try/@catch guarded;
+//   - the cover window lifts on a timer AND an absolute hard cap, so it can
+//     never get stuck blacking out the screen;
+//   - only ever triggered by a scene whose bundle id is exactly Amazon.
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
 static NSString * const kAMZ      = @"com.amazon.Amazon";
 static NSString * const kDefaults = @"com.colindavidr.amazondark";
-static const NSTimeInterval kCoverHold    = 3.5;  // dark cover visible time
-static const NSTimeInterval kCoverFade    = 0.45; // fade-out duration
-static const NSTimeInterval kCoverHardCap = 7.0;  // absolute max on screen
+static const NSTimeInterval kCoverHold    = 3.0;  // dark cover visible time
+static const NSTimeInterval kCoverFade    = 0.40; // lift animation
+static const NSTimeInterval kCoverHardCap = 6.0;  // absolute max on screen
+static const NSTimeInterval kReCoverGap   = 8.0;  // ignore re-triggers within
 
 @interface SBSceneView : UIView
 @end
 
-static const void *kCoverKey        = &kCoverKey;
-static const void *kCoveredOnceKey  = &kCoveredOnceKey;
+@interface UIImage (AD)
++ (UIImage *)_applicationIconImageForBundleIdentifier:(NSString *)bid format:(int)fmt scale:(CGFloat)scale;
++ (UIImage *)_applicationIconImageForBundleIdentifier:(NSString *)bid format:(int)fmt;
+@end
+
+static UIWindow *gCoverWin;
+static NSTimeInterval gLastPresent;
 
 static void ADSBLog(NSString *msg) {
     @try {
@@ -52,7 +62,6 @@ static BOOL ADSBEnabled(void) {
     } @catch (__unused NSException *e) { return YES; }
 }
 
-// Best-effort bundle id for whatever scene-view class SpringBoard hands us.
 static NSString *ADSceneBundleId(UIView *v, NSString **hitPathOut) {
     NSArray *paths = @[ @"sceneHandle.application.bundleIdentifier",
                         @"sceneHandle.sceneIdentity.bundleIdentifier",
@@ -71,37 +80,81 @@ static NSString *ADSceneBundleId(UIView *v, NSString **hitPathOut) {
     return nil;
 }
 
-static void ADRemoveCover(UIView *host) {
+static UIWindowScene *ADForegroundWindowScene(void) {
     @try {
-        UIView *cover = objc_getAssociatedObject(host, kCoverKey);
-        if (!cover) return;
-        objc_setAssociatedObject(host, kCoverKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [UIView animateWithDuration:kCoverFade animations:^{ cover.alpha = 0.0; }
-                         completion:^(BOOL f){ @try { [cover removeFromSuperview]; } @catch (__unused NSException *e) {} }];
+        NSArray *scenes = [[UIApplication sharedApplication].connectedScenes allObjects];
+        for (UIScene *s in scenes)
+            if ([s isKindOfClass:[UIWindowScene class]] &&
+                s.activationState == UISceneActivationStateForegroundActive)
+                return (UIWindowScene *)s;
+        for (UIScene *s in scenes)
+            if ([s isKindOfClass:[UIWindowScene class]]) return (UIWindowScene *)s;
+    } @catch (__unused NSException *e) {}
+    return nil;
+}
+
+static void ADDismissCover(void) {
+    @try {
+        if (!gCoverWin) return;
+        UIWindow *w = gCoverWin; gCoverWin = nil;
+        [UIView animateWithDuration:kCoverFade animations:^{ w.alpha = 0.0; }
+                         completion:^(BOOL f){ @try { w.hidden = YES; } @catch (__unused NSException *e) {} }];
+        ADSBLog(@"COVER dismissed");
     } @catch (__unused NSException *e) {}
 }
 
-static void ADAddCover(UIView *host) {
+static void ADPresentCover(void) {
     @try {
-        if (!host || !host.window) return;
-        if (objc_getAssociatedObject(host, kCoverKey)) return; // already covering
-        CGRect b = CGRectIsEmpty(host.bounds) ? [UIScreen mainScreen].bounds : host.bounds;
-        UIView *cover = [[UIView alloc] initWithFrame:b];
-        cover.backgroundColor = [UIColor colorWithRed:0x18/255.0 green:0x1a/255.0 blue:0x1b/255.0 alpha:1.0];
-        cover.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        cover.userInteractionEnabled = NO;
-        [host addSubview:cover];
-        objc_setAssociatedObject(host, kCoverKey, cover, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ADSBLog(@"COVER added");
+        NSTimeInterval now = CFAbsoluteTimeGetCurrent();
+        if (gCoverWin) return;
+        if (now - gLastPresent < kReCoverGap) return;
+        gLastPresent = now;
+
+        UIWindow *w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        UIWindowScene *sc = ADForegroundWindowScene();
+        if (sc) w.windowScene = sc;
+        UIColor *dark = [UIColor colorWithRed:0x18/255.0 green:0x1a/255.0 blue:0x1b/255.0 alpha:1.0];
+        UIViewController *vc = [UIViewController new];
+        vc.view.backgroundColor = dark;
+        w.rootViewController = vc;
+        w.backgroundColor = dark;
+
+        // Centered Amazon app icon -> the dark loading screen reads as a proper
+        // splash instead of a black void.
+        @try {
+            UIImage *icon = nil;
+            if ([UIImage respondsToSelector:@selector(_applicationIconImageForBundleIdentifier:format:scale:)])
+                icon = [UIImage _applicationIconImageForBundleIdentifier:kAMZ format:2 scale:[UIScreen mainScreen].scale];
+            if (!icon && [UIImage respondsToSelector:@selector(_applicationIconImageForBundleIdentifier:format:)])
+                icon = [UIImage _applicationIconImageForBundleIdentifier:kAMZ format:2];
+            if (icon) {
+                UIImageView *logo = [[UIImageView alloc] initWithImage:icon];
+                logo.contentMode = UIViewContentModeScaleAspectFit;
+                logo.translatesAutoresizingMaskIntoConstraints = NO;
+                logo.layer.cornerRadius = 22.0;
+                logo.layer.masksToBounds = YES;
+                [vc.view addSubview:logo];
+                [NSLayoutConstraint activateConstraints:@[
+                    [logo.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
+                    [logo.centerYAnchor constraintEqualToAnchor:vc.view.centerYAnchor],
+                    [logo.widthAnchor constraintEqualToConstant:132.0],
+                    [logo.heightAnchor constraintEqualToConstant:132.0],
+                ]];
+                ADSBLog(@"COVER logo added");
+            } else { ADSBLog(@"COVER logo unavailable"); }
+        } @catch (__unused NSException *e) {}
+        w.windowLevel = UIWindowLevelAlert + 1.0;
+        w.userInteractionEnabled = NO;
+        w.hidden = NO;   // show without becoming key (don't steal input focus)
+        gCoverWin = w;
+        ADSBLog(@"COVER presented");
+
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCoverHold * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{ ADRemoveCover(host); });
+                       dispatch_get_main_queue(), ^{ ADDismissCover(); });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCoverHardCap * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            @try {
-                UIView *c = objc_getAssociatedObject(host, kCoverKey);
-                if (c) { objc_setAssociatedObject(host, kCoverKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                         [c removeFromSuperview]; ADSBLog(@"COVER hardcap-removed"); }
-            } @catch (__unused NSException *e) {}
+            @try { if (gCoverWin) { UIWindow *x = gCoverWin; gCoverWin = nil; x.hidden = YES; ADSBLog(@"COVER hardcap"); } }
+            @catch (__unused NSException *e) {}
         });
     } @catch (__unused NSException *e) {}
 }
@@ -112,7 +165,6 @@ static void ADAddCover(UIView *host) {
     @try {
         if (!self.window) return;
 
-        // Learn the real class + which keypath yields a bundle id, once per class.
         static NSMutableSet *seen; static dispatch_once_t once;
         dispatch_once(&once, ^{ seen = [NSMutableSet set]; });
         NSString *cls = NSStringFromClass([self class]);
@@ -126,12 +178,8 @@ static void ADAddCover(UIView *host) {
         }
         if (![bid isEqualToString:kAMZ]) return;
 
-        // Cover once per scene-view instance (a cold relaunch makes a new one,
-        // so each launch is still covered; a background->resume is not).
-        if (objc_getAssociatedObject(self, kCoveredOnceKey)) return;
-        objc_setAssociatedObject(self, kCoveredOnceKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ADSBLog(@"AMAZON scene -> cover");
-        ADAddCover(self);
+        ADSBLog(@"AMAZON scene -> present cover");
+        ADPresentCover();
     } @catch (__unused NSException *e) {}
 }
 %end
