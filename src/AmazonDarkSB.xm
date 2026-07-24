@@ -174,9 +174,42 @@ static void ADPresentCover(void) {
         coverAssembled:;
         w.windowLevel = UIWindowLevelAlert + 1.0;
         w.userInteractionEnabled = NO;
+
+        // STOCK LAUNCH FEEL. The cover cannot let the system's own zoom play --
+        // that zoom renders the cached LIGHT launch frame, which is the flash this
+        // cover exists to hide -- so it performs the same motion itself: the dark
+        // surface springs up from centre with the logo riding inside, corner
+        // radius relaxing from icon-round to square, first frame faded in rather
+        // than cut. Reduce Motion gets the system's cross-fade instead, matching
+        // what iOS itself does under that setting.
+        UIView *cv = w.rootViewController.view;
+        BOOL adReduce = UIAccessibilityIsReduceMotionEnabled();
+        if (!adReduce){
+            cv.layer.cornerRadius  = 42.0;
+            cv.layer.masksToBounds = YES;
+            cv.transform = CGAffineTransformMakeScale(0.32, 0.32);
+            cv.alpha = 0.0;
+        } else {
+            cv.alpha = 0.0;
+        }
         w.hidden = NO;   // show without becoming key (don't steal input focus)
+        if (!adReduce){
+            [UIView animateWithDuration:0.10 animations:^{ cv.alpha = 1.0; }];
+            [UIView animateWithDuration:0.55 delay:0.0
+                 usingSpringWithDamping:0.82 initialSpringVelocity:0.4
+                                options:UIViewAnimationOptionCurveEaseOut
+                             animations:^{ cv.transform = CGAffineTransformIdentity; }
+                             completion:nil];
+            CABasicAnimation *cr = [CABasicAnimation animationWithKeyPath:@"cornerRadius"];
+            cr.fromValue = @42.0; cr.toValue = @0.0; cr.duration = 0.55;
+            cr.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+            [cv.layer addAnimation:cr forKey:@"adcr"];
+            cv.layer.cornerRadius = 0.0;
+        } else {
+            [UIView animateWithDuration:0.22 animations:^{ cv.alpha = 1.0; }];
+        }
         gCoverWin = w;
-        ADSBLog(@"COVER presented");
+        ADSBLog(@"COVER presented (animated)");
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCoverHold * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ ADDismissCover(); });
