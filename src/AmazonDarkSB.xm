@@ -135,6 +135,7 @@ static void ADPresentCover(void) {
                 UIImageView *logo = [[UIImageView alloc] initWithImage:splash];
                 logo.contentMode = UIViewContentModeScaleAspectFit;   // wordmark: no
                 logo.translatesAutoresizingMaskIntoConstraints = NO;  // corner mask
+                logo.tag = 7741;
                 [vc.view addSubview:logo];
                 CGFloat lw = [UIScreen mainScreen].bounds.size.width * 0.62;
                 CGFloat lh = lw * (splash.size.height / MAX(splash.size.width, 1.0));
@@ -159,6 +160,7 @@ static void ADPresentCover(void) {
                 UIImageView *logo = [[UIImageView alloc] initWithImage:icon];
                 logo.contentMode = UIViewContentModeScaleAspectFit;
                 logo.translatesAutoresizingMaskIntoConstraints = NO;
+                logo.tag = 7741;
                 logo.layer.cornerRadius = 22.0;
                 logo.layer.masksToBounds = YES;
                 [vc.view addSubview:logo];
@@ -175,41 +177,36 @@ static void ADPresentCover(void) {
         w.windowLevel = UIWindowLevelAlert + 1.0;
         w.userInteractionEnabled = NO;
 
-        // STOCK LAUNCH FEEL. The cover cannot let the system's own zoom play --
-        // that zoom renders the cached LIGHT launch frame, which is the flash this
-        // cover exists to hide -- so it performs the same motion itself: the dark
-        // surface springs up from centre with the logo riding inside, corner
-        // radius relaxing from icon-round to square, first frame faded in rather
-        // than cut. Reduce Motion gets the system's cross-fade instead, matching
-        // what iOS itself does under that setting.
+        // INSTANT COVERAGE, SETTLE INSIDE. A grow-from-small cover exposes the
+        // system's light launch frame (and the storyboard pill) around it while
+        // it scales -- exactly the regression reported. So the surface is
+        // full-screen from its first frame with only a fast opacity ramp to
+        // avoid a hard cut, and the stock-launch feel comes from the LOGO
+        // settling (0.92 -> 1.0 spring + fade) inside the already-opaque cover.
         UIView *cv = w.rootViewController.view;
+        UIView *lg = [cv viewWithTag:7741];
         BOOL adReduce = UIAccessibilityIsReduceMotionEnabled();
-        if (!adReduce){
-            cv.layer.cornerRadius  = 42.0;
-            cv.layer.masksToBounds = YES;
-            cv.transform = CGAffineTransformMakeScale(0.32, 0.32);
-            cv.alpha = 0.0;
-        } else {
-            cv.alpha = 0.0;
+        w.alpha = 0.25;                    // substantial coverage on frame one
+        if (lg && !adReduce){
+            lg.alpha = 0.0;
+            lg.transform = CGAffineTransformMakeScale(0.92, 0.92);
         }
         w.hidden = NO;   // show without becoming key (don't steal input focus)
-        if (!adReduce){
-            [UIView animateWithDuration:0.10 animations:^{ cv.alpha = 1.0; }];
-            [UIView animateWithDuration:0.55 delay:0.0
-                 usingSpringWithDamping:0.82 initialSpringVelocity:0.4
+        [UIView animateWithDuration:0.14 animations:^{ w.alpha = 1.0; }];
+        if (lg && !adReduce){
+            [UIView animateWithDuration:0.45 delay:0.05
+                 usingSpringWithDamping:0.85 initialSpringVelocity:0.3
                                 options:UIViewAnimationOptionCurveEaseOut
-                             animations:^{ cv.transform = CGAffineTransformIdentity; }
-                             completion:nil];
-            CABasicAnimation *cr = [CABasicAnimation animationWithKeyPath:@"cornerRadius"];
-            cr.fromValue = @42.0; cr.toValue = @0.0; cr.duration = 0.55;
-            cr.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
-            [cv.layer addAnimation:cr forKey:@"adcr"];
-            cv.layer.cornerRadius = 0.0;
-        } else {
-            [UIView animateWithDuration:0.22 animations:^{ cv.alpha = 1.0; }];
+                             animations:^{
+                                 lg.alpha = 1.0;
+                                 lg.transform = CGAffineTransformIdentity;
+                             } completion:nil];
+        } else if (lg){
+            lg.alpha = 0.0;
+            [UIView animateWithDuration:0.20 animations:^{ lg.alpha = 1.0; }];
         }
-        gCoverWin = w;
-        ADSBLog(@"COVER presented (animated)");
+                gCoverWin = w;
+        ADSBLog(@"COVER presented (settle)");
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kCoverHold * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{ ADDismissCover(); });

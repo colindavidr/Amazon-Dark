@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.126.0"
+#define AD_VERSION "v5.127.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -490,14 +490,18 @@ static NSString *ADDarkReaderBootstrapBuild(void){
              "if(__adPinRe.test(c)){n.style.setProperty('background-color','transparent','important');}"
              "if(String(c).indexOf('a-section')>=0&&n.closest&&"
                "n.closest('[class*=puis],[class*=s-result],[class*=s-card]')&&"
-               "!n.closest('[class*=s-product-image]')){"
+               "!n.closest('[class*=s-product-image],[class*=mlt-icon],[class*=puis-heart-position]')&&"
+               "!(n.querySelector&&n.querySelector("
+                 "'[class*=mlt-icon],[class*=puis-heart-position],[class*=lists-framework-action]'))){"
                "n.style.setProperty('background-color','#181a1b','important');}"
              "if(n.querySelectorAll){var q=n.querySelectorAll('[class*=unfill],[class*=placehold]');"
                "for(var i=0;i<q.length;i++)q[i].style.setProperty('background-color','transparent','important');"
                "var q2=n.querySelectorAll('[class*=a-section]');"
                "for(var k2=0;k2<q2.length&&k2<200;k2++){var e2=q2[k2];"
                  "if(e2.closest&&e2.closest('[class*=puis],[class*=s-result],[class*=s-card]')&&"
-                   "!e2.closest('[class*=s-product-image]')){"
+                   "!e2.closest('[class*=s-product-image],[class*=mlt-icon],[class*=puis-heart-position]')&&"
+                   "!(e2.querySelector&&e2.querySelector("
+                     "'[class*=mlt-icon],[class*=puis-heart-position],[class*=lists-framework-action]'))){"
                    "e2.style.setProperty('background-color','#181a1b','important');}}}"
            "}catch(e){}};"
            "new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var m=ms[i];"
@@ -756,7 +760,19 @@ static NSString *ADDarkReaderBootstrapBuild(void){
 
            // Clear stray dark square wrappers around the buttons (the box that
            // can extend past the pill). Shapes/borders are persistent CSS above.
-           // FILTER PANEL BY HEADING. The tile container uses hashed class names
+           // BOX CLEARER. Small dark wrappers hugging the mlt/heart discs are our
+           // own earlier paint (or anything else's); the disc supplies its own
+           // background, so every tight ancestor goes transparent.
+           "try{var MC=document.querySelectorAll('[class*=mlt-icon-container],[class*=lists-framework-action-button]');"
+             "for(var mq=0;mq<MC.length&&mq<80;mq++){var me=MC[mq];"
+               "var mp=me.parentElement,md=0;"
+               "while(mp&&md++<3){var mr2=mp.getBoundingClientRect();"
+                 "if(mr2.width<=64&&mr2.height<=64){"
+                   "mp.style.setProperty('background-color','transparent','important');"
+                   "mp.style.setProperty('box-shadow','none','important');}"
+                 "mp=mp.parentElement;}}"
+           "}catch(e){}"
+                      // FILTER PANEL BY HEADING. The tile container uses hashed class names
            // (no filter/refinement/facet), so anchor on the visible "Filters for"
            // heading instead, walk up to the section, and whiten every monochrome
            // pictogram inside. SKIP still protects photo pills. The audit reports
@@ -1639,10 +1655,20 @@ static void ADPreDarken(WKWebView *wv){
                         if (ADUptime() > 900.0){ [tm invalidate]; return; }
                         NSString *cu = wp.URL.absoluteString ?: @"";
                         NSString *lu = objc_getAssociatedObject(wp, kLastU) ?: @"";
-                        if ([cu isEqualToString:lu]) return;
-                        objc_setAssociatedObject(wp, kLastU, cu, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                        if (!cu.length || !wp.window) return;
-                        NSString *cs = cu.length > 60 ? [cu substringToIndex:60] : cu;
+                        static const void *kTick = &kTick;
+                        int tick = [objc_getAssociatedObject(wp, kTick) intValue] + 1;
+                        objc_setAssociatedObject(wp, kTick, @(tick), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                        BOOL changed = ![cu isEqualToString:lu];
+                        if (changed)
+                            objc_setAssociatedObject(wp, kLastU, cu, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                        if (!wp.window) return;
+                        // No native URL (AMIConfigurableWebView): interrogate the
+                        // document every 3rd tick instead of skipping forever.
+                        if (!cu.length){
+                            if (tick % 3 != 0) return;
+                        } else if (!changed) return;
+                        NSString *cs = cu.length ? (cu.length > 60 ? [cu substringToIndex:60] : cu)
+                                                 : [NSString stringWithFormat:@"(nourl:%s)", object_getClassName(wp)];
                         [wp evaluateJavaScript:ADDarkReaderReapply()
                              completionHandler:^(id rp, NSError *ep){
                             @try {
