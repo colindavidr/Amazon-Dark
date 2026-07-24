@@ -68,7 +68,7 @@
 #import <dlfcn.h>
 // Keep in lockstep with layout/DEBIAN/control. The init log is the only way to
 // confirm which build is live on device.
-#define AD_VERSION "v5.119.0"
+#define AD_VERSION "v5.120.0"
 
 #import "ADColor.h"
 #import "ADImageKey.h"
@@ -1305,6 +1305,26 @@ static void ADWalkWebViews(UIView *v){
                 if (![seenWV containsObject:key]){
                     [seenWV addObject:key];
                     ADLog(@"WEBVIEW cls=%s url=%@", object_getClassName(wv), u);
+                    // Ping the document once per webview and surface the FAILURE, not
+                    // just the success: an App-Bound block answers here as
+                    // WKErrorDomain/14 with no result, which is indistinguishable from
+                    // silence unless the error is printed. Also record whether the
+                    // configuration carries the restriction at all.
+                    BOOL lim = NO;
+                    @try { lim = [[wv.configuration valueForKey:@"limitsNavigationsToAppBoundDomains"] boolValue]; } @catch(...) {}
+                    NSString *uShort = u.length > 60 ? [u substringToIndex:60] : u;
+                    [wv evaluateJavaScript:
+                        @"(function(){try{return (location.href||'nohref').slice(0,60)"
+                         "+' DR='+(window.DarkReader?1:0)"
+                         "+' t='+String(document.title||'').slice(0,24);}catch(e){return 'jserr';}})()"
+                         completionHandler:^(id pr, NSError *pe){
+                        @try {
+                            if (pe) ADLog(@"wvping %@ -> ERR %@/%ld appbound=%d",
+                                          uShort, pe.domain, (long)pe.code, lim ? 1 : 0);
+                            else    ADLog(@"wvping %@ -> %@ appbound=%d",
+                                          uShort, pr, lim ? 1 : 0);
+                        } @catch(...) {}
+                    }];
                 }
             } @catch(...) {}
             ADEnableDarkReaderIn(wv);
@@ -1323,6 +1343,22 @@ static void ADInjectAllWebViews(void){
         if (gWebSeen != lastReported){ ADLog(@"web views themed: %d", gWebSeen); lastReported = gWebSeen; }
     } @catch(...) {}
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// WKWebViewConfiguration — App-Bound Domains would silently kill every injection
+// path (user scripts AND evaluateJavaScript) on any origin not in the app's
+// WKAppBoundDomains list. Pharmacy is the prime suspect for living on such an
+// origin. Force the restriction off; log if Amazon actually tried to enable it,
+// because that log line is the confirmation of the whole mechanism.
+%hook WKWebViewConfiguration
+- (void)setLimitsNavigationsToAppBoundDomains:(BOOL)flag {
+    if (flag) ADLog(@"appbound: Amazon requested limitsNavigationsToAppBoundDomains=YES — forcing NO");
+    %orig(NO);
+}
+- (BOOL)limitsNavigationsToAppBoundDomains {
+    return NO;
+}
+%end
 
 // ════════════════════════════════════════════════════════════════════════════════
 // WKUserContentController — restore our script the moment Amazon strips it.
